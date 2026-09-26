@@ -43,11 +43,11 @@ export class NeuralVoice {
   }
 
   // Promise of { samples, rate }. Identical requests share one generation.
-  request (text, voice, speed) {
+  request (text, voice, speed, words = []) {
     const key = `${voice}|${speed}|${text}`;
     const hit = this.cache.get(key);
     if (hit) return hit.promise;
-    const job = { key, text, voice, speed };
+    const job = { key, text, voice, speed, words };
     job.promise = new Promise((resolve, reject) => { job.resolve = resolve; job.reject = reject; });
     job.promise.catch(() => {});
     this.cache.set(key, job);
@@ -85,7 +85,7 @@ export class NeuralVoice {
       const job = this.queue.shift();
       job.id = this.nextId++;
       this.busy = job;
-      this.worker.postMessage({ type: 'gen', id: job.id, text: job.text, voice: job.voice, speed: job.speed });
+      this.worker.postMessage({ type: 'gen', id: job.id, text: job.text, voice: job.voice, speed: job.speed, words: job.words });
     }, () => {});
   }
 
@@ -93,7 +93,7 @@ export class NeuralVoice {
     const job = this.busy;
     this.busy = null;
     if (job && job.id === m.id) {
-      if (m.type === 'audio') { job.done = true; job.resolve({ samples: m.samples, rate: m.rate }); } else { this.cache.delete(job.key); job.reject(new Error(m.message)); }
+      if (m.type === 'audio') { job.done = true; job.resolve({ samples: m.samples, rate: m.rate, weights: m.weights }); } else { this.cache.delete(job.key); job.reject(new Error(m.message)); }
     }
     this.pump();
   }
@@ -198,19 +198,23 @@ export function spokenTokens (toks) {
 export function speechChunks (q, toks) {
   const words = spokenTokens(toks);
   const header = `${q.part === 'tossup' ? 'Toss-up' : 'Bonus'} ${q.num}. ${q.category}, ${q.format === 'mc' ? 'multiple choice' : 'short answer'}.`;
-  const chunks = [{ text: header, idxs: [], offsets: [] }];
+  const chunks = [{ text: header, idxs: [], offsets: [], words: [] }];
   let cur = [];
   const flush = () => {
     if (!cur.length) return;
-    let text = ''; const offsets = [];
+    let text = ''; const offsets = []; const said = [];
     for (const i of cur) {
       offsets.push(text.length);
       let w = words[i];
       if (toks[i].br) w = toks[i].text.replace(')', '') + ','; // "W," before a choice
+      said.push(w);
       if (w) text += w + ' ';
     }
-    if (text.trim()) chunks.push({ text: text.trim(), idxs: cur.slice(), offsets });
-    else if (chunks.length) { const last = chunks[chunks.length - 1]; last.idxs.push(...cur); last.offsets.push(...cur.map(() => last.text.length)); }
+    if (text.trim()) chunks.push({ text: text.trim(), idxs: cur.slice(), offsets, words: said });
+    else if (chunks.length) {
+      const last = chunks[chunks.length - 1];
+      last.idxs.push(...cur); last.offsets.push(...cur.map(() => last.text.length)); last.words.push(...cur.map(() => ''));
+    }
     cur = [];
   };
   toks.forEach((t, i) => {
@@ -224,4 +228,99 @@ export function speechChunks (q, toks) {
   });
   flush();
   return chunks;
+}
+
+// ---------- lining up words with the generated audio ----------
+
+// rough spoken length of a word, in syllables
+export function syllables (word) {
+  let n = 0;
+  for (const part of (word || '').split(/\s+/)) {
+    const letters = part.replace(/[^A-Za-z]/g, '');
+    const digits = part.replace(/[^0-9]/g, '');
+    if (digits) n += digits.length * 1.3 + (part.includes('.') ? 1 : 0);
+    if (!letters) continue;
+    if (letters.length <= 3 && letters === letters.toUpperCase()) { // spelled out: "W", "DNA"
+      for (const c of letters) n += c === 'W' ? 3 : 1;
+      continue;
+    }
+    const lower = letters.toLowerCase();
+    let v = (lower.match(/[aeiouy]+/g) || []).length;
+    if (/[^l]e$/.test(lower) && v > 1) v--;
+    n += Math.max(1, v);
+  }
+  return n;
+}
+
+function pauseAfter (word) {
+  if (!word) return 0;
+  if (/[.?!]["”)]?$/.test(word)) return 2.2;
+  if (/[,;:]["”)]?$/.test(word)) return 1.3;
+  return 0;
+}
+
+// silent stretches in the audio: [{ start, end }] in seconds, plus where speech begins/ends
+export function findPauses (samples, rate, minPause = 0.07) {
+  const hop = Math.round(rate * 0.01);
+  const rms = [];
+  for (let i = 0; i + hop <= samples.length; i += hop) {
+    let e = 0;
+    for (let j = i; j < i + hop; j++) e += samples[j] * samples[j];
+    rms.push(Math.sqrt(e / hop));
+  }
+  const sorted = rms.slice().sort((a, b) => a - b);
+  const loud = sorted[Math.floor(sorted.length * 0.9)] || 0;
+  const thr = Math.max(0.004, loud * 0.08);
+  let first = rms.findIndex(r => r > thr);
+  let last = rms.length - 1 - rms.slice().reverse().findIndex(r => r > thr);
+  if (first < 0) { first = 0; last = rms.length - 1; }
+  const pauses = [];
+  let run = -1;
+  for (let f = first; f <= last; f++) {
+    if (rms[f] <= thr) { if (run < 0) run = f; } else if (run >= 0) {
+      if ((f - run) * 0.01 >= minPause) pauses.push({ start: run * 0.01, end: f * 0.01 });
+      run = -1;
+    }
+  }
+  return { start: first * 0.01, end: (last + 1) * 0.01, pauses };
+}
+
+// Start time (seconds into the audio) of each token in a chunk. Word lengths come
+// from phoneme counts (or syllables as a fallback), then get pinned to the real
+// pauses at punctuation.
+export function alignChunk (chunk, samples, rate, weights = null) {
+  const w = weights || chunk.words.map(syllables);
+  const pw = chunk.words.map(pauseAfter);
+  const startPos = []; let pos = 0;
+  for (let i = 0; i < w.length; i++) { startPos.push(pos); pos += w[i] + pw[i]; }
+  const total = pos || 1;
+  const { start: t0, end: t1, pauses } = findPauses(samples, rate);
+  const anchors = [[0, t0]];
+  let pi = 0;
+  for (let i = 0; i < w.length - 1; i++) {
+    if (!pw[i]) continue;
+    const [lastPos, lastT] = anchors[anchors.length - 1];
+    const speed = (t1 - lastT) / Math.max(total - lastPos, 1e-6);
+    const at = startPos[i] + w[i];
+    const expected = lastT + (at - lastPos) * speed;
+    const tol = Math.max(0.35, 0.25 * (at - lastPos) * speed);
+    let best = -1;
+    for (let k = pi; k < pauses.length; k++) {
+      const d = Math.abs(pauses[k].start - expected);
+      if (d <= tol && (best < 0 || d < Math.abs(pauses[best].start - expected))) best = k;
+      if (pauses[k].start > expected + tol) break;
+    }
+    if (best >= 0) {
+      anchors.push([at, pauses[best].start], [at + pw[i], pauses[best].end]);
+      pi = best + 1;
+    }
+  }
+  anchors.push([total, t1]);
+  const timeAt = (p) => {
+    let k = 1;
+    while (k < anchors.length - 1 && anchors[k][0] < p) k++;
+    const [p0, a0] = anchors[k - 1]; const [p1, a1] = anchors[k];
+    return p1 === p0 ? a1 : a0 + (a1 - a0) * (p - p0) / (p1 - p0);
+  };
+  return { starts: startPos.map(timeAt), ends: startPos.map((p, i) => timeAt(p + w[i])) };
 }

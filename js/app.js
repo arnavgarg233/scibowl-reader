@@ -1,5 +1,5 @@
 import { checkAnswer, parseAnswer, stripLatex } from './check.js';
-import { NeuralVoice, NEURAL_VOICES, rankBrowserVoices, speechChunks } from './voice.js';
+import { NeuralVoice, NEURAL_VOICES, alignChunk, rankBrowserVoices, speechChunks } from './voice.js';
 
 const CATEGORIES = ['Biology', 'Chemistry', 'Earth and Space', 'Energy', 'Math', 'Physics', 'General Science'];
 const FORMATS = { mc: 'Multiple Choice', sa: 'Short Answer' };
@@ -168,7 +168,7 @@ function audioContext () {
 function requestChunks (q) {
   const chunks = speechChunks(q, tokenize(q));
   const voice = settings.neuralVoice; const speed = neuralSpeed();
-  return chunks.map(c => ({ ...c, key: neural.key(c.text, voice, speed), audio: neural.request(c.text, voice, speed) }));
+  return chunks.map(c => ({ ...c, key: neural.key(c.text, voice, speed), audio: neural.request(c.text, voice, speed, c.words) }));
 }
 
 function prefetchUpcoming (currentChunks = []) {
@@ -211,15 +211,17 @@ function playChunk (audio, chunk, gen) {
     src.connect(ctx.destination);
     game.voiceSource = src;
     const start = ctx.currentTime;
-    const len = chunk.text.length;
-    // reveal words in step with the audio (by character position)
+    // when each word starts in this clip (phoneme lengths pinned to the real pauses)
+    const { starts } = alignChunk(chunk, audio.samples, audio.rate, audio.weights);
+    const LEAD = 0.04; // show a word just as it begins
     const tick = setInterval(() => {
       if (gen !== game.speechGen) { clearInterval(tick); return; }
-      const pos = (ctx.currentTime - start) / buf.duration * len;
+      const t = ctx.currentTime - start + LEAD;
+      // silent tokens (symbols a read-as description replaces) share the next word's start
       let k = 0;
-      while (k < chunk.offsets.length && chunk.offsets[k] <= pos) k++;
+      while (k < starts.length && starts[k] <= t) k++;
       if (k) revealUpTo(chunk.idxs[k - 1] + 1);
-    }, 40);
+    }, 25);
     src.onended = () => { clearInterval(tick); if (game.voiceSource === src) game.voiceSource = null; resolve(); };
     src.start();
   });
