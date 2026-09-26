@@ -8,7 +8,6 @@
   --pron-color: #6c757d;
   --buzz-color: #dc3545;
   --history-border: lightgray;
-  --figure-filter: none;
 }
 
 [data-bs-theme="dark"] {
@@ -28,7 +27,6 @@
   --pron-color: #9aa3ab;
   --buzz-color: #e74c3c;
   --history-border: #555;
-  --figure-filter: invert(0.88) hue-rotate(180deg);
 }
 
 [data-bs-theme="dark"] .btn-primary {
@@ -81,19 +79,6 @@ body {
 #answer .answer-label { font-weight: 700; }
 #answer .given { color: var(--bs-secondary-color); }
 
-.figure-crop {
-  margin-top: .75rem;
-  max-width: 100%;
-}
-.figure-crop img {
-  max-width: min(100%, 620px);
-  height: auto;
-  filter: var(--figure-filter);
-  border: 1px solid var(--bs-border-color);
-  border-radius: .25rem;
-  background: #fff;
-}
-.figure-crop figcaption { font-size: .8rem; color: var(--bs-secondary-color); }
 
 .room-history { border-top: .5px solid var(--history-border); }
 .room-history .card { margin-bottom: .5rem; }

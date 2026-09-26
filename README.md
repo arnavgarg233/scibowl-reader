@@ -10,12 +10,16 @@ questions are revealed word by word, <kbd>space</kbd> buzzes, you type the answe
 - Difficulty follows the NSB coordinator manual: rounds 1–10 are about equal, then each round
   gets harder through round 17 (filters: rounds 1–10 / 11–14 / 15–17)
 - "Only ones I haven't seen" and "Review ones I missed" pools
-- Math and chemistry rendered with KaTeX (superscripts, subscripts, fractions); questions whose
-  equations were images in the PDF also show a crop of the original packet
+- Math and chemistry rendered with KaTeX. The 662 questions whose equations were images or
+  equation-editor objects in the PDFs were transcribed to LaTeX by hand-checking each one against
+  the original page (`data/overrides.json`, applied by the extractor)
 - Answer checking understands `ACCEPT:` / `DO NOT ACCEPT:`, MC letters or choice text, numbers and
   fractions, and "identify all" lists; "I was wrong / right" to override, and self-judging for
   answers it can't check
-- Optional read-aloud voice, light / night themes, per-category stats, question history
+- Read aloud with a human-like AI voice ([Kokoro](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX),
+  runs entirely in your browser: WebGPU when available, one-time ~325 MB download, then cached) or
+  the browser's built-in voices. Math is spoken the way a moderator reads it
+- Light / night themes, per-category stats, question history
 
 Keys: `space` buzz, `n` next, `s` skip, `p` pause, `e` settings, `c` / `w` mark yourself right / wrong.
 

@@ -113,11 +113,15 @@
           <input class="form-check-input" id="sound" type="checkbox" role="switch">
           <label class="form-check-label" for="sound">Buzzer sound</label>
         </div>
-        <div class="form-check form-switch">
-          <input class="form-check-input" id="tts" type="checkbox" role="switch">
-          <label class="form-check-label" for="tts">Read aloud (voice)</label>
-        </div>
-        <select class="form-select form-select-sm my-1 d-none" id="voice" aria-label="Voice"></select>
+        <label class="form-label mb-1 mt-2" for="voice-mode">Read aloud:</label>
+        <select class="form-select form-select-sm mb-1" id="voice-mode">
+          <option value="off">Off (text only)</option>
+          <option value="neural">Human-like AI voice</option>
+          <option value="browser">Browser voice</option>
+        </select>
+        <select class="form-select form-select-sm mb-1 d-none" id="neural-voice" aria-label="AI voice"></select>
+        <select class="form-select form-select-sm mb-1 d-none" id="voice" aria-label="Browser voice"></select>
+        <div class="small text-body-secondary mb-1 d-none" id="voice-status"></div>
 
         <div class="mt-2">
           <label for="reading-speed" class="form-label mb-0">Reading speed: <span id="reading-speed-display">50</span> <span class="text-body-secondary small" id="wpm-display"></span></label>
@@ -169,10 +173,8 @@
 
         <div class="mt-2" id="category-line"></div>
         <div class="mt-1" id="question"></div>
-        <div id="question-figure"></div>
         <a class="mt-1 mt-lg-3 p-0 btn btn-link float-end d-none" id="toggle-correct" href="#">I was wrong</a>
         <div class="mt-1 mt-lg-3" id="answer"></div>
-        <div id="answer-figure"></div>
         <ul class="room-history list-unstyled mt-3 pt-2" id="room-history"></ul>
       </div>
     </div>

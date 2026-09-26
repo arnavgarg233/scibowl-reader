@@ -148,6 +148,5 @@ export function checkAnswer (question, given) {
     if (lm !== null) { if (lm) return true; continue; }
     if (similar(g, a)) return true;
   }
-  // part of the answer is an equation image, so the text may be incomplete
-  return question.img_a ? null : false;
+  return false;
 }

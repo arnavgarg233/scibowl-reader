@@ -24,6 +24,8 @@ for base, start in (("A", 0x1D434), ("a", 0x1D44E)):  # math italic
     for i in range(26):
         MATH_ALNUM[start + i] = chr(ord(base) + i)
 MATH_ALNUM[0x210E] = "h"
+MATH_ALNUM.update({0x1D6FC: "α", 0x1D6FD: "β", 0x1D6FE: "γ", 0x1D6FF: "δ", 0x1D703: "θ", 0x1D706: "λ", 0x1D707: "μ",
+                   0x1D70B: "π", 0x1D70C: "ρ", 0x1D70E: "σ", 0x1D711: "φ", 0x1D714: "ω", 0x2DA: "°"})
 
 CATS = {
     "BIOLOGY": "Biology", "LIFE SCIENCE": "Biology", "CHEMISTRY": "Chemistry", "PHYSICS": "Physics",
@@ -173,7 +175,7 @@ def degarble(t):
 
 
 def norm_space(t):
-    return re.sub(r"[ \t ]+", " ", t).strip()
+    return re.sub(r"[ \t ]+", " ", t.replace("à→", "→")).strip()
 
 
 def parse_pdf(path, set_no, round_name, img_dir):
@@ -236,7 +238,8 @@ def parse_pdf(path, set_no, round_name, img_dir):
             continue
         if not cur:
             continue
-        am = re.match(r"^\s*ANSWERS?\s*:?\s*(?=\S)", plain, re.I)
+        # "ANSWER:" / "ANSWER Y)" / "Answer:"; a wrapped stem line starting "answer in ..." is not one
+        am = re.match(r"^\s*(?:ANSWERS?\s*:?|[Aa]nswers?\s*:)\s*(?=\S)", plain)
         if am and cur["state"] == "q":
             cur["state"] = "a"
             cur["ans"].append(r["text"][len(am.group(0)):] if r["text"].startswith(plain[:len(am.group(0))]) else plain[len(am.group(0)):])
@@ -318,7 +321,7 @@ def crop(doc, regions, img_dir, set_no, round_name, q, key, ans_row):
         rtag = re.sub(r"\W", "", round_name)
         name = f"s{set_no}-r{rtag}-{q['part'][0]}{q['num']}-{key}{i}.png"
         pix.save(os.path.join(img_dir, name))
-        names.append("data/img/" + name)
+        names.append(name)
     return names
 
 
@@ -326,7 +329,8 @@ def main():
     pdf_dir, names_path = sys.argv[1], sys.argv[2]
     link_names = json.load(open(names_path))
     names = {k.split("/")[-2] + "__" + k.split("/")[-1]: v for k, v in link_names.items()}
-    img_dir = os.path.join(OUT, "img")
+    # crops of image/equation-font math, for transcribing into data/overrides.json (not shipped)
+    img_dir = os.path.join(pdf_dir, "crops")
     os.makedirs(img_dir, exist_ok=True)
     for f in glob.glob(os.path.join(img_dir, "*.png")):
         os.remove(f)
@@ -343,6 +347,23 @@ def main():
     allq.sort(key=lambda q: (q["set"], int(q["round"]) if q["round"].isdigit() else 99, q["num"], q["part"] != "tossup"))
     for i, q in enumerate(allq):
         q["id"] = f"{q['set']}-{q['round']}-{q['num']}{q['part'][0]}"
+    # hand-checked LaTeX transcriptions of questions whose math was images in the PDF
+    overrides = json.load(open(os.path.join(OUT, "overrides.json")))
+    unreviewed = []
+    for q in allq:
+        o = overrides.get(q["id"])
+        if o:
+            q["text"], q["answer"] = o["text"], o["answer"]
+            if o.get("choices"):
+                q["choices"] = o["choices"]
+                if re.match(r"^[WXYZ]\)", q["answer"]):
+                    q["format"] = "mc"
+        elif "img_q" in q or "img_a" in q:
+            unreviewed.append(q["id"])
+        for k in [k for k in q if k.startswith("img_")]:
+            del q[k]
+    if unreviewed:
+        print(len(unreviewed), "questions have image math but no override; crops are in", img_dir)
     json.dump(allq, open(os.path.join(OUT, "questions.json"), "w"), ensure_ascii=False, separators=(",", ":"))
     sources = {}
     for path, name in link_names.items():
@@ -353,7 +374,7 @@ def main():
     for r in report:
         if r[1] < 15 or r[2] < 15:
             print("LOW", *r)
-    print(len(allq), "questions,", sum(1 for q in allq if "img_q" in q or "img_a" in q), "with crops")
+    print(len(allq), "questions")
 
 
 if __name__ == "__main__":

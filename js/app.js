@@ -1,4 +1,5 @@
 import { checkAnswer, parseAnswer, stripLatex } from './check.js';
+import { NeuralVoice, NEURAL_VOICES, rankBrowserVoices, speechChunks } from './voice.js';
 
 const CATEGORIES = ['Biology', 'Chemistry', 'Earth and Space', 'Energy', 'Math', 'Physics', 'General Science'];
 const FORMATS = { mc: 'Multiple Choice', sa: 'Short Answer' };
@@ -17,7 +18,8 @@ const DEFAULT_SETTINGS = {
   showHistory: true,
   showSetName: true,
   timer: true,
-  tts: false,
+  voiceMode: 'off', // off | neural | browser
+  neuralVoice: 'af_heart',
   voice: '',
   readingSpeed: 50,
   tossupTime: 5,
@@ -127,28 +129,130 @@ function renderTokens (toks, upto, buzzAt = -1) {
   return html.replace(/\u0000BUZZ\u0000/g, '<span class="buzzmark">(#)</span>');
 }
 
-function figure (paths, caption, optional = false) {
-  if (!paths) return '';
-  const fig = `<figure class="figure-crop">${paths.map(p => `<img src="${p}" alt="Original question formatting" loading="lazy">`).join('<br>')}${optional ? '' : `<figcaption>${caption}</figcaption>`}</figure>`;
-  return optional ? `<details class="figure-toggle mt-2"><summary class="small text-body-secondary">Show original formatting</summary>${fig}</details>` : fig;
-}
-
 // ---------- speech ----------
-
-function spokenText (t) {
-  return stripLatex(t)
-    .replace(/\^2\b/g, ' squared').replace(/\^3\b/g, ' cubed')
-    .replace(/\^(-?\w+)/g, ' to the $1')
-    .replace(/^\[[^\]\s]*-[^\]\s]*\]$/, '') // single-word pronunciation guide
-    .replace(/[[\]]/g, '')
-    .replace(/–/g, ' minus ');
-}
 
 let voices = [];
 function loadVoices () {
-  voices = (window.speechSynthesis?.getVoices() || []).filter(v => v.lang.startsWith('en'));
-  const sel = $('voice');
-  sel.replaceChildren(...voices.map(v => new Option(v.name, v.name, false, v.name === settings.voice)));
+  voices = rankBrowserVoices(window.speechSynthesis?.getVoices() || []);
+  if (!settings.voice && voices[0]) settings.voice = voices[0].name;
+  $('voice').replaceChildren(...voices.map(v => new Option(v.name, v.name, false, v.name === settings.voice)));
+}
+
+const neural = new NeuralVoice(status => {
+  const el = $('voice-status');
+  if (status.state === 'loading') {
+    el.textContent = `Downloading AI voice (one time, ${neural.device === 'webgpu' ? '~325' : '~90'} MB): ${status.pct}%`;
+  } else if (status.state === 'ready') {
+    el.textContent = neural.device === 'webgpu' ? 'AI voice ready.' : 'AI voice ready (no WebGPU here, so it may lag; the browser voice is faster).';
+  } else {
+    el.textContent = `AI voice failed to load (${status.message}). Using the browser voice.`;
+  }
+});
+
+function neuralSpeed () { return Math.round((0.8 + settings.readingSpeed / 100 * 0.6) * 20) / 20; }
+
+function voiceMode () {
+  if (settings.voiceMode === 'neural') return neural.isReady ? 'neural' : 'off'; // silent until the model is ready
+  if (settings.voiceMode !== 'off' && window.speechSynthesis) return 'browser';
+  return 'off';
+}
+
+let voiceCtx = null;
+function audioContext () {
+  voiceCtx = voiceCtx || new (window.AudioContext || window.webkitAudioContext)();
+  if (voiceCtx.state === 'suspended' && !game.paused) voiceCtx.resume();
+  return voiceCtx;
+}
+
+// queue audio for a question's chunks (current question first, then the next one)
+function requestChunks (q) {
+  const chunks = speechChunks(q, tokenize(q));
+  const voice = settings.neuralVoice; const speed = neuralSpeed();
+  return chunks.map(c => ({ ...c, key: neural.key(c.text, voice, speed), audio: neural.request(c.text, voice, speed) }));
+}
+
+function prefetchUpcoming (currentChunks = []) {
+  if (voiceMode() !== 'neural') return;
+  const upcoming = game.pendingBonus || game.queue[0];
+  const next = upcoming ? requestChunks(upcoming) : [];
+  neural.retain([...currentChunks, ...next].map(c => c.key));
+}
+
+function revealUpTo (i) {
+  if (i > game.wordIndex) {
+    game.wordIndex = i;
+    $('question').innerHTML = renderTokens(game.toks, game.wordIndex);
+  }
+}
+
+async function speakNeural () {
+  const gen = ++game.speechGen;
+  const chunks = requestChunks(game.q);
+  prefetchUpcoming(chunks);
+  const live = () => gen === game.speechGen && game.phase === 'reading';
+  for (const chunk of chunks) {
+    let audio;
+    try { audio = await chunk.audio; } catch (e) { if (live()) readNext(); return; } // fall back to silent reading
+    if (!live()) return;
+    await playChunk(audio, chunk, gen);
+    if (!live()) return;
+    if (chunk.idxs.length) revealUpTo(chunk.idxs[chunk.idxs.length - 1] + 1);
+  }
+  if (live()) doneReading();
+}
+
+function playChunk (audio, chunk, gen) {
+  return new Promise(resolve => {
+    const ctx = audioContext();
+    const buf = ctx.createBuffer(1, audio.samples.length, audio.rate);
+    buf.copyToChannel(audio.samples, 0);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    game.voiceSource = src;
+    const start = ctx.currentTime;
+    const len = chunk.text.length;
+    // reveal words in step with the audio (by character position)
+    const tick = setInterval(() => {
+      if (gen !== game.speechGen) { clearInterval(tick); return; }
+      const pos = (ctx.currentTime - start) / buf.duration * len;
+      let k = 0;
+      while (k < chunk.offsets.length && chunk.offsets[k] <= pos) k++;
+      if (k) revealUpTo(chunk.idxs[k - 1] + 1);
+    }, 40);
+    src.onended = () => { clearInterval(tick); if (game.voiceSource === src) game.voiceSource = null; resolve(); };
+    src.start();
+  });
+}
+
+function speakBrowser () {
+  const synth = window.speechSynthesis;
+  synth.cancel();
+  const gen = ++game.speechGen;
+  const chunks = speechChunks(game.q, game.toks);
+  const live = () => gen === game.speechGen && game.phase === 'reading';
+  const speakChunk = (ci) => {
+    if (!live()) return;
+    if (ci >= chunks.length) return doneReading();
+    const { text, idxs, offsets } = chunks[ci];
+    const u = new SpeechSynthesisUtterance(text);
+    const v = voices.find(x => x.name === settings.voice);
+    if (v) u.voice = v;
+    u.rate = 0.6 + settings.readingSpeed / 100;
+    u.onboundary = (e) => {
+      if (!live() || !idxs.length) return;
+      let k = 0;
+      while (k + 1 < offsets.length && offsets[k + 1] <= e.charIndex) k++;
+      revealUpTo(idxs[k] + 1);
+    };
+    u.onend = () => {
+      if (!live()) return;
+      if (idxs.length) revealUpTo(idxs[idxs.length - 1] + 1);
+      speakChunk(ci + 1);
+    };
+    synth.speak(u);
+  };
+  speakChunk(0);
 }
 
 // ---------- game state ----------
@@ -166,7 +270,8 @@ const game = {
   timer: { interval: null, remaining: 0, onEnd: null },
   last: null, // last scored result, for "I was wrong"
   pendingBonus: null,
-  speechChunk: 0
+  speechGen: 0,
+  voiceSource: null
 };
 
 function shuffle (a) {
@@ -232,6 +337,7 @@ function recordProgress (result) {
 
 function next () {
   if (game.phase === 'answering' || game.phase === 'judging') return;
+  if (voiceMode() === 'neural') audioContext(); // create inside the key press/click (autoplay rules)
   if ((game.phase === 'reading' || game.phase === 'dead') && game.q) {
     finishUnanswered(true);
   }
@@ -264,20 +370,21 @@ function startQuestion (q) {
   game.phase = 'reading';
   game.last = null;
   $('answer').innerHTML = '';
-  $('answer-figure').innerHTML = '';
   $('question').innerHTML = '';
   $('toggle-correct').classList.add('d-none');
   $('answer-input-group').classList.add('d-none');
   $('judge-group').classList.add('d-none');
   $('judge-group').classList.remove('d-flex');
   $('category-line').innerHTML = `<span class="part">${q.part === 'tossup' ? 'TOSS-UP' : 'BONUS'}</span> · ${escapeHtml(q.category.toUpperCase())}${q.sub ? ` <span class="text-body-secondary">(${q.sub})</span>` : ''} · <i>${FORMATS[q.format]}</i> <span class="badge rounded-pill diff-${difficulty(q)} ms-1" title="${DIFFICULTIES[difficulty(q)]}">${DIFFICULTY_NAMES[difficulty(q)]}</span>`;
-  $('question-figure').innerHTML = figure(q.img_q, 'Original formatting from the NSB packet', q.img_q_optional);
   updateInfo(false);
   updateButtons();
   setTimerDisplay(q.part === 'bonus' ? settings.bonusTime : settings.tossupTime);
   game.nextWordAt = 0;
   $('pause').innerHTML = '<i class="bi bi-pause-fill"></i>';
-  if (settings.tts && window.speechSynthesis) speakQuestion(); else readNext();
+  const mode = voiceMode();
+  if (mode === 'neural') speakNeural();
+  else if (mode === 'browser') speakBrowser();
+  else readNext();
 }
 
 function wordDelay (tok, nextTok) {
@@ -310,58 +417,11 @@ function wpm (speed) {
   return Math.round(60000 / avg);
 }
 
-function speakQuestion () {
-  // speak in chunks so boundary events map cleanly back to words
-  const synth = window.speechSynthesis;
-  synth.cancel();
-  const chunks = [];
-  let cur = [];
-  game.toks.forEach((t, i) => {
-    cur.push(i);
-    if (cur.length >= 30 && /[.?!:]$/.test(t.text) || t.br || i === game.toks.length - 1 || (game.toks[i + 1] && game.toks[i + 1].br)) {
-      chunks.push(cur); cur = [];
-    }
-  });
-  if (cur.length) chunks.push(cur);
-  const header = `${game.q.part === 'tossup' ? 'Toss-up' : 'Bonus'}. ${game.q.category}. ${FORMATS[game.q.format]}.`;
-  const speakChunk = (ci) => {
-    if (game.phase !== 'reading') return;
-    if (ci >= chunks.length) return doneReading();
-    game.speechChunk = ci;
-    const idxs = chunks[ci];
-    let text = ci === 0 ? header + ' ' : '';
-    const offsets = [];
-    for (const i of idxs) {
-      offsets.push(text.length);
-      const s = spokenText(game.toks[i].text);
-      text += (s || '') + ' ';
-    }
-    const u = new SpeechSynthesisUtterance(text);
-    const v = voices.find(x => x.name === settings.voice);
-    if (v) u.voice = v;
-    u.rate = 0.6 + settings.readingSpeed / 100;
-    u.onboundary = (e) => {
-      if (game.phase !== 'reading') return;
-      let k = 0;
-      while (k + 1 < offsets.length && offsets[k + 1] <= e.charIndex) k++;
-      if (e.charIndex >= offsets[0]) {
-        game.wordIndex = Math.max(game.wordIndex, idxs[k] + 1);
-        $('question').innerHTML = renderTokens(game.toks, game.wordIndex);
-      }
-    };
-    u.onend = () => {
-      if (game.phase !== 'reading') return;
-      game.wordIndex = Math.max(game.wordIndex, idxs[idxs.length - 1] + 1);
-      $('question').innerHTML = renderTokens(game.toks, game.wordIndex);
-      speakChunk(ci + 1);
-    };
-    synth.speak(u);
-  };
-  speakChunk(0);
-}
-
 function stopReading () {
   clearTimeout(game.readTimeout);
+  game.speechGen++;
+  if (game.voiceSource) { try { game.voiceSource.stop(); } catch (e) {} game.voiceSource = null; }
+  if (voiceCtx && voiceCtx.state === 'suspended') voiceCtx.resume();
   if (window.speechSynthesis) window.speechSynthesis.cancel();
 }
 
@@ -532,6 +592,7 @@ function reveal (result) {
   addHistory(result, $('question').innerHTML);
   updateStatline();
   updateMatchCount();
+  prefetchUpcoming();
   updateButtons();
 }
 
@@ -560,7 +621,6 @@ function showAnswer (given, pendingJudge, result) {
     game.lastGiven = null;
   }
   $('answer').innerHTML = html;
-  $('answer-figure').innerHTML = figure(q.img_a, 'Answer as printed in the packet');
 }
 
 function toggleCorrect (e) {
@@ -589,7 +649,10 @@ function togglePause () {
   if (game.phase !== 'reading' && game.phase !== 'dead') return;
   game.paused = !game.paused;
   if (game.phase === 'reading') {
-    if (settings.tts && window.speechSynthesis) {
+    const mode = voiceMode();
+    if (mode === 'neural') {
+      if (game.paused) voiceCtx?.suspend(); else voiceCtx?.resume();
+    } else if (mode === 'browser') {
       if (game.paused) window.speechSynthesis.pause(); else window.speechSynthesis.resume();
     } else if (!game.paused) readNext();
     else clearTimeout(game.readTimeout);
@@ -698,8 +761,8 @@ function historyItem (result, questionHtml) {
     <div class="card-header" data-bs-toggle="collapse" data-bs-target="#${id}">${icon} <b>${q.part === 'tossup' ? 'TU' : 'B'}</b> ${escapeHtml(q.category)} · Set ${q.set} R${escapeHtml(q.round)} #${q.num}${pts}
       <span class="text-body-secondary d-none d-md-inline">— ${escapeHtml(stripLatex(parseAnswer(q.answer).main || q.answer).slice(0, 60))}</span></div>
     <div class="collapse" id="${id}"><div class="card-body">
-      <div>${questionHtml}</div>${figure(q.img_q, '', true)}
-      <div class="mt-2">${answerHtml(q)}</div>${figure(q.img_a, '', true)}
+      <div>${questionHtml}</div>
+      <div class="mt-2">${answerHtml(q)}</div>
       ${result.given ? `<div class="text-body-secondary mt-1">You said: ${escapeHtml(result.given)}</div>` : ''}
       ${src ? `<a class="small" href="${src}" target="_blank" rel="noopener">Source PDF</a>` : ''}
     </div></div></div>`;
@@ -815,15 +878,24 @@ function initSettingsUi () {
   sw('show-set-name', 'showSetName', false, () => updateInfo(game.phase === 'revealed'));
   sw('enable-timer', 'timer');
   sw('sound', 'sound');
-  const syncTts = () => $('voice').classList.toggle('d-none', !settings.tts);
-  sw('tts', 'tts', false, syncTts);
-  syncTts();
-  if (!window.speechSynthesis) { $('tts').disabled = true; }
-  else {
+  // read aloud
+  if (settings.tts) { settings.voiceMode = 'browser'; delete settings.tts; } // old setting
+  $('neural-voice').replaceChildren(...NEURAL_VOICES.map(([id, name]) => new Option(name, id, false, id === settings.neuralVoice)));
+  const syncVoice = () => {
+    $('voice').classList.toggle('d-none', settings.voiceMode !== 'browser');
+    $('neural-voice').classList.toggle('d-none', settings.voiceMode !== 'neural');
+    $('voice-status').classList.toggle('d-none', settings.voiceMode !== 'neural');
+    if (settings.voiceMode === 'neural') neural.load().catch(() => {});
+  };
+  $('voice-mode').value = settings.voiceMode;
+  $('voice-mode').addEventListener('change', e => { settings.voiceMode = e.target.value; syncVoice(); settingsChanged(false); });
+  $('neural-voice').addEventListener('change', e => { settings.neuralVoice = e.target.value; settingsChanged(false); });
+  if (window.speechSynthesis) {
     loadVoices();
     window.speechSynthesis.onvoiceschanged = loadVoices;
   }
   $('voice').addEventListener('change', e => { settings.voice = e.target.value; settingsChanged(false); });
+  syncVoice();
 
   $('reading-speed').value = settings.readingSpeed;
   $('reading-speed-display').textContent = settings.readingSpeed;
@@ -933,5 +1005,8 @@ async function main () {
   updateButtons();
   $('question').innerHTML = '<span class="text-body-secondary">Press <kbd>n</kbd> or <b>Start</b> to begin. <kbd>space</kbd> buzzes, type your answer and hit <kbd>enter</kbd>.</span>';
 }
+
+// handle for poking at state from the browser console
+window.sbrDebug = { game, neural, settings, get voiceCtx () { return voiceCtx; } };
 
 main();
