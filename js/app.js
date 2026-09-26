@@ -23,6 +23,9 @@ const DEFAULT_SETTINGS = {
   tossupTime: 5,
   bonusTime: 20,
   answerTime: 10,
+  sound: true,
+  difficulties: ['standard', 'hard', 'hardest'],
+  pool: 'all', // all | unseen | missed
   theme: 'auto'
 };
 
@@ -38,6 +41,8 @@ function save (key, value) {
 const settings = load('sbr-settings', DEFAULT_SETTINGS);
 const emptyStats = () => ({ tu: { seen: 0, correct: 0, wrong: 0, negs: 0, points: 0, celerity: 0 }, bonus: { seen: 0, correct: 0, points: 0 }, byCat: {} });
 let stats = load('sbr-stats', emptyStats());
+// questions you've seen / missed, for "unseen only" and "review missed"
+let progress = load('sbr-progress', { seen: [], missed: [] });
 
 let ALL = [];
 let BY_ID = {};
@@ -180,13 +185,49 @@ function buildQueue () {
     game.queue = ALL.filter(q => q.set === +settings.packetSet && q.round === settings.packetRound && q.part === wantPart)
       .sort((a, b) => a.num - b.num);
   } else {
-    const sets = settings.sets ? new Set(settings.sets) : null;
-    game.queue = shuffle(ALL.filter(q => q.part === wantPart &&
-      settings.categories.includes(q.category) &&
-      settings.formats.includes(q.format) &&
-      (!sets || sets.has(q.set))));
+    game.queue = shuffle(matching());
   }
   game.pendingBonus = null;
+  updateMatchCount();
+}
+
+// NSB coordinator manual: rounds 1-10 are about equal; from round 11 each round
+// gets harder, with round 17 the hardest.
+function difficulty (q) {
+  const r = parseInt(q.round);
+  return r <= 10 ? 'standard' : r <= 14 ? 'hard' : 'hardest';
+}
+const DIFFICULTIES = { standard: 'Rounds 1–10', hard: 'Rounds 11–14', hardest: 'Rounds 15–17' };
+const DIFFICULTY_NAMES = { standard: 'Round robin', hard: 'Elimination', hardest: 'Late elimination' };
+
+function matching () {
+  const wantPart = settings.questionType === 'bonuses' ? 'bonus' : 'tossup';
+  const sets = settings.sets ? new Set(settings.sets) : null;
+  const seen = new Set(progress.seen); const missed = new Set(progress.missed);
+  return ALL.filter(q => q.part === wantPart &&
+    settings.categories.includes(q.category) &&
+    settings.formats.includes(q.format) &&
+    settings.difficulties.includes(difficulty(q)) &&
+    (!sets || sets.has(q.set)) &&
+    (settings.pool === 'all' || (settings.pool === 'unseen' ? !seen.has(q.id) : missed.has(q.id))));
+}
+
+function updateMatchCount () {
+  const el = $('match-count');
+  if (!el) return;
+  if (settings.mode === 'packet') { el.textContent = ''; return; }
+  const n = matching().length;
+  const what = settings.questionType === 'bonuses' ? 'bonus' : 'toss-up';
+  el.textContent = `${n.toLocaleString()} ${what}${n === 1 ? '' : 's'} match`;
+  el.classList.toggle('text-danger', n === 0);
+}
+
+function recordProgress (result) {
+  const id = result.q.id;
+  if (!progress.seen.includes(id)) progress.seen.push(id);
+  progress.missed = progress.missed.filter(x => x !== id);
+  if (!result.correct) progress.missed.push(id);
+  save('sbr-progress', progress);
 }
 
 function next () {
@@ -229,30 +270,44 @@ function startQuestion (q) {
   $('answer-input-group').classList.add('d-none');
   $('judge-group').classList.add('d-none');
   $('judge-group').classList.remove('d-flex');
-  $('category-line').innerHTML = `<span class="part">${q.part === 'tossup' ? 'TOSS-UP' : 'BONUS'}</span> · ${escapeHtml(q.category.toUpperCase())}${q.sub ? ` <span class="text-body-secondary">(${q.sub})</span>` : ''} · <i>${FORMATS[q.format]}</i>`;
+  $('category-line').innerHTML = `<span class="part">${q.part === 'tossup' ? 'TOSS-UP' : 'BONUS'}</span> · ${escapeHtml(q.category.toUpperCase())}${q.sub ? ` <span class="text-body-secondary">(${q.sub})</span>` : ''} · <i>${FORMATS[q.format]}</i> <span class="badge rounded-pill diff-${difficulty(q)} ms-1" title="${DIFFICULTIES[difficulty(q)]}">${DIFFICULTY_NAMES[difficulty(q)]}</span>`;
   $('question-figure').innerHTML = figure(q.img_q, 'Original formatting from the NSB packet', q.img_q_optional);
   updateInfo(false);
   updateButtons();
   setTimerDisplay(q.part === 'bonus' ? settings.bonusTime : settings.tossupTime);
+  game.nextWordAt = 0;
+  $('pause').innerHTML = '<i class="bi bi-pause-fill"></i>';
   if (settings.tts && window.speechSynthesis) speakQuestion(); else readNext();
 }
 
-function wordDelay (word) {
+function wordDelay (tok, nextTok) {
   // qbreader's pacing: longer words and sentence/comma pauses take longer
-  const plain = stripLatex(word);
+  const plain = stripLatex(tok.text);
+  // pronunciation guides like [kor-ee-AWN-ik] aren't read aloud by moderators
+  if (/^\[[^\]\s]*\]\W*$/.test(plain)) return 0;
   let t = Math.log(Math.max(plain.length, 1)) + 1;
-  if (/[a-z)][.?!]["”]?$/i.test(plain)) t += 2.5;
+  if (/[a-z0-9)][.?!]["”]?$/i.test(plain)) t += 2.5;
   else if (/[,;:]["”]?$/.test(plain)) t += 1.5;
+  if (nextTok && nextTok.br) t += 1.5; // beat between answer choices
   return t * 0.9 * (140 - settings.readingSpeed);
 }
 
 function readNext () {
   if (game.phase !== 'reading' || game.paused) return;
   if (game.wordIndex >= game.toks.length) return doneReading();
-  const word = game.toks[game.wordIndex];
+  const tok = game.toks[game.wordIndex];
   game.wordIndex++;
   $('question').innerHTML = renderTokens(game.toks, game.wordIndex);
-  game.readTimeout = setTimeout(readNext, wordDelay(word.text));
+  // schedule against the ideal timeline so slow frames don't accumulate drift
+  const now = performance.now();
+  game.nextWordAt = Math.max(game.nextWordAt || now, now - 250) + wordDelay(tok, game.toks[game.wordIndex]);
+  game.readTimeout = setTimeout(readNext, Math.max(0, game.nextWordAt - now));
+}
+
+// rough words-per-minute for the speed label
+function wpm (speed) {
+  const avg = (Math.log(6) + 1 + 0.35) * 0.9 * (140 - speed);
+  return Math.round(60000 / avg);
 }
 
 function speakQuestion () {
@@ -326,13 +381,18 @@ function doneReading () {
 }
 
 function buzz () {
-  if (game.kind === 'tossup' && (game.phase === 'reading' || game.phase === 'dead')) {
+  if (game.phase !== 'reading' && game.phase !== 'dead') return;
+  game.paused = false;
+  $('pause').innerHTML = '<i class="bi bi-pause-fill"></i>';
+  if (game.kind === 'tossup') {
     game.buzzIndex = game.wordIndex;
     stopReading();
     stopTimer();
     beep();
+    // show where you buzzed right away
+    $('question').innerHTML = renderTokens(game.toks, game.wordIndex, game.buzzIndex);
     openAnswer(settings.answerTime);
-  } else if (game.kind === 'bonus' && (game.phase === 'reading' || game.phase === 'dead')) {
+  } else {
     // answering a bonus early: show the rest of it and open the box
     stopReading();
     if (game.phase === 'reading') {
@@ -397,20 +457,25 @@ function interrupted () {
 
 function applyScore (result, sign) {
   const q = result.q;
-  const cat = stats.byCat[q.category] || (stats.byCat[q.category] = { tuSeen: 0, tuCorrect: 0, tuNegs: 0, bSeen: 0, bCorrect: 0 });
+  const blank = () => ({ tuSeen: 0, tuCorrect: 0, tuNegs: 0, bSeen: 0, bCorrect: 0 });
+  stats.byDiff = stats.byDiff || {};
+  const buckets = [
+    stats.byCat[q.category] || (stats.byCat[q.category] = blank()),
+    stats.byDiff[difficulty(q)] || (stats.byDiff[difficulty(q)] = blank())
+  ];
+  const add = (key) => buckets.forEach(b => { b[key] += sign; });
   if (q.part === 'tossup') {
-    stats.tu.seen += sign;
-    cat.tuSeen += sign;
+    stats.tu.seen += sign; add('tuSeen');
     if (result.correct) {
-      stats.tu.correct += sign; cat.tuCorrect += sign;
+      stats.tu.correct += sign; add('tuCorrect');
       stats.tu.celerity += sign * result.celerity;
     } else if (result.buzzed) {
       stats.tu.wrong += sign;
-      if (result.neg) { stats.tu.negs += sign; cat.tuNegs += sign; }
+      if (result.neg) { stats.tu.negs += sign; add('tuNegs'); }
     }
   } else {
-    stats.bonus.seen += sign; cat.bSeen += sign;
-    if (result.correct) { stats.bonus.correct += sign; cat.bCorrect += sign; }
+    stats.bonus.seen += sign; add('bSeen');
+    if (result.correct) { stats.bonus.correct += sign; add('bCorrect'); }
   }
   stats.tu.points += sign * result.points;
   save('sbr-stats', stats);
@@ -449,6 +514,9 @@ function finishUnanswered (skipped) {
 
 function reveal (result) {
   game.phase = 'revealed';
+  stopTimer();
+  setTimerDisplay(0);
+  recordProgress(result);
   const q = result.q;
   $('question').innerHTML = renderTokens(game.toks, game.toks.length, game.buzzIndex);
   showAnswer(result.given, false, result);
@@ -463,6 +531,7 @@ function reveal (result) {
   }
   addHistory(result, $('question').innerHTML);
   updateStatline();
+  updateMatchCount();
   updateButtons();
 }
 
@@ -503,6 +572,8 @@ function toggleCorrect (e) {
   r.neg = !r.correct && r.q.part === 'tossup' && game.buzzIndex >= 0 && game.buzzIndex < game.toks.length;
   r.points = pointsFor(r);
   applyScore(r, 1);
+  recordProgress(r);
+  updateMatchCount();
   if (settings.questionType === 'match' && r.q.part === 'tossup') {
     game.pendingBonus = (r.correct || settings.alwaysBonus) ? BY_ID[r.q.id.replace(/t$/, 'b')] || null : null;
   }
@@ -529,7 +600,7 @@ function togglePause () {
 // ---------- timer ----------
 
 function setTimerDisplay (seconds) {
-  const tenths = Math.max(0, Math.round(seconds * 10));
+  const tenths = Math.max(0, Math.ceil(seconds * 10 - 1e-6));
   $('timer').querySelector('.face').textContent = Math.floor(tenths / 10);
   $('timer').querySelector('.fraction').textContent = '.' + (tenths % 10);
   $('timer').classList.toggle('low', tenths <= 30 && game.timer.interval !== null);
@@ -543,14 +614,17 @@ function startTimer (seconds, onEnd) {
     setTimerDisplay(seconds);
     return; // untimed: wait for the player
   }
-  const t0 = Date.now();
-  const total = game.timer.remaining;
+  let left = seconds * 1000;
+  let last = performance.now();
   game.timer.interval = setInterval(() => {
-    if (game.paused) return;
-    game.timer.remaining = total - Math.floor((Date.now() - t0) / 100);
-    setTimerDisplay(game.timer.remaining / 10);
-    if (game.timer.remaining <= 0) {
+    const now = performance.now();
+    if (!game.paused) left -= now - last;
+    last = now;
+    game.timer.remaining = Math.max(0, Math.ceil(left / 100));
+    setTimerDisplay(left / 1000);
+    if (left <= 0) {
       stopTimer();
+      beep(330, 0.35);
       onEnd();
     }
   }, 50);
@@ -564,15 +638,16 @@ function stopTimer () {
 }
 
 let audioCtx = null;
-function beep () {
+function beep (freq = 520, length = 0.25) {
+  if (!settings.sound) return;
   try {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
     const o = audioCtx.createOscillator(); const g = audioCtx.createGain();
-    o.type = 'square'; o.frequency.value = 520;
+    o.type = 'square'; o.frequency.value = freq;
     g.gain.setValueAtTime(0.08, audioCtx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.25);
+    g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + length);
     o.connect(g).connect(audioCtx.destination);
-    o.start(); o.stop(audioCtx.currentTime + 0.25);
+    o.start(); o.stop(audioCtx.currentTime + length);
   } catch (e) {}
 }
 
@@ -638,15 +713,18 @@ function addHistory (result, questionHtml) {
 }
 
 function renderStatsModal () {
-  const rows = CATEGORIES.map(c => {
-    const s = stats.byCat[c] || { tuSeen: 0, tuCorrect: 0, tuNegs: 0, bSeen: 0, bCorrect: 0 };
-    const pct = (a, b) => b ? Math.round(100 * a / b) + '%' : '–';
-    return `<tr><td>${c}</td><td>${s.tuSeen}</td><td>${s.tuCorrect}</td><td>${s.tuNegs}</td><td>${pct(s.tuCorrect, s.tuSeen)}</td><td>${s.bSeen}</td><td>${s.bCorrect}</td><td>${pct(s.bCorrect, s.bSeen)}</td></tr>`;
-  }).join('');
-  $('stats-body').innerHTML = `<table class="table table-sm stats-table">
-    <thead><tr><th>Category</th><th>TU seen</th><th>TU correct</th><th>Interrupts</th><th>TU %</th><th>Bonus seen</th><th>Bonus correct</th><th>Bonus %</th></tr></thead>
-    <tbody>${rows}</tbody></table>
-    <p class="small text-body-secondary mb-0">Toss-ups +4, bonuses +10, wrong interrupt −4 (NSB scoring).</p>`;
+  const pct = (a, b) => b ? Math.round(100 * a / b) + '%' : '–';
+  const row = (label, s = {}) => {
+    s = { tuSeen: 0, tuCorrect: 0, tuNegs: 0, bSeen: 0, bCorrect: 0, ...s };
+    return `<tr><td>${label}</td><td>${s.tuSeen}</td><td>${s.tuCorrect}</td><td>${s.tuNegs}</td><td>${pct(s.tuCorrect, s.tuSeen)}</td><td>${s.bSeen}</td><td>${s.bCorrect}</td><td>${pct(s.bCorrect, s.bSeen)}</td></tr>`;
+  };
+  const head = first => `<thead><tr><th>${first}</th><th>TU seen</th><th>TU correct</th><th>Interrupts</th><th>TU %</th><th>Bonus seen</th><th>Bonus correct</th><th>Bonus %</th></tr></thead>`;
+  const byDiff = stats.byDiff || {};
+  $('stats-body').innerHTML = `<table class="table table-sm stats-table">${head('Subject')}
+    <tbody>${CATEGORIES.map(c => row(c, stats.byCat[c])).join('')}</tbody></table>
+    <table class="table table-sm stats-table">${head('Difficulty')}
+    <tbody>${Object.keys(DIFFICULTIES).map(d => row(`${DIFFICULTY_NAMES[d]} <span class="text-body-secondary small">(${DIFFICULTIES[d]})</span>`, byDiff[d])).join('')}</tbody></table>
+    <p class="small text-body-secondary mb-0">Toss-ups +4, bonuses +10, wrong interrupt −4 (NSB scoring). ${progress.seen.length.toLocaleString()} questions seen, ${progress.missed.length.toLocaleString()} in your review list.</p>`;
 }
 
 function applyTheme () {
@@ -700,7 +778,7 @@ function initSettingsUi () {
   const syncMode = () => {
     $('packet-settings').classList.toggle('d-none', settings.mode !== 'packet');
     $('random-settings').classList.toggle('d-none', settings.mode === 'packet');
-    document.querySelectorAll('#category-buttons, #format-buttons').forEach(el => el.classList.toggle('opacity-50', settings.mode === 'packet'));
+    $('filter-settings').classList.toggle('d-none', settings.mode === 'packet');
   };
   $('set-mode').value = settings.mode;
   syncMode();
@@ -720,6 +798,10 @@ function initSettingsUi () {
   };
   toggles('category-buttons', CATEGORIES.map(c => [c, c === 'Earth and Space' ? 'Earth & Space' : c]), 'categories');
   toggles('format-buttons', Object.entries(FORMATS), 'formats');
+  toggles('difficulty-buttons', Object.entries(DIFFICULTIES), 'difficulties');
+  $('difficulty-buttons').querySelectorAll('label').forEach(l => { l.title = DIFFICULTY_NAMES[l.previousElementSibling.value]; });
+  $('pool').value = settings.pool;
+  $('pool').addEventListener('change', e => { settings.pool = e.target.value; settingsChanged(); });
 
   // switches
   const sw = (id, key, rebuild = false, after) => {
@@ -732,6 +814,7 @@ function initSettingsUi () {
   $('room-history').classList.toggle('d-none', !settings.showHistory);
   sw('show-set-name', 'showSetName', false, () => updateInfo(game.phase === 'revealed'));
   sw('enable-timer', 'timer');
+  sw('sound', 'sound');
   const syncTts = () => $('voice').classList.toggle('d-none', !settings.tts);
   sw('tts', 'tts', false, syncTts);
   syncTts();
@@ -744,9 +827,11 @@ function initSettingsUi () {
 
   $('reading-speed').value = settings.readingSpeed;
   $('reading-speed-display').textContent = settings.readingSpeed;
+  $('wpm-display').textContent = `(~${wpm(settings.readingSpeed)} wpm)`;
   $('reading-speed').addEventListener('input', e => {
     settings.readingSpeed = +e.target.value;
     $('reading-speed-display').textContent = settings.readingSpeed;
+    $('wpm-display').textContent = `(~${wpm(settings.readingSpeed)} wpm)`;
     settingsChanged(false);
   });
   for (const [id, key] of [['tossup-time', 'tossupTime'], ['bonus-time', 'bonusTime'], ['answer-time', 'answerTime']]) {
@@ -755,8 +840,10 @@ function initSettingsUi () {
   }
 
   $('clear-stats').addEventListener('click', () => {
-    if (!window.confirm('Clear all stats?')) return;
-    stats = emptyStats(); save('sbr-stats', stats); updateStatline();
+    if (!window.confirm('Clear all stats, including which questions you have seen and missed?')) return;
+    stats = emptyStats(); save('sbr-stats', stats);
+    progress = { seen: [], missed: [] }; save('sbr-progress', progress);
+    updateStatline(); updateMatchCount();
   });
   $('stats-modal').addEventListener('show.bs.modal', renderStatsModal);
   $('theme-toggle').addEventListener('click', () => {
@@ -777,23 +864,43 @@ function initControls () {
   $('judge-wrong').addEventListener('click', () => judge(false));
   $('toggle-correct').addEventListener('click', toggleCorrect);
 
+  // clicked controls keep focus; drop it so space/keys go to the game, not the control
+  document.addEventListener('click', e => {
+    const el = e.target.closest('button, input[type=checkbox], input[type=range], summary, a');
+    if (el && !el.closest('.modal, .dropdown-menu')) setTimeout(() => el.blur(), 0);
+  });
+
+  const typing = el => el && (el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' ||
+    (el.tagName === 'INPUT' && !['checkbox', 'radio', 'range', 'button'].includes(el.type)));
+
+  // capture phase so a focused button/switch never also reacts to the key
   document.addEventListener('keydown', e => {
-    const tag = document.activeElement?.tagName;
-    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (typing(document.activeElement) || e.ctrlKey || e.metaKey || e.altKey) return;
     if (document.querySelector('.modal.show')) return;
-    switch (e.key) {
+    const key = e.key.toLowerCase();
+    if (game.phase === 'judging' && (key === 'c' || key === 'w')) {
+      e.preventDefault();
+      judge(key === 'c');
+      return;
+    }
+    switch (key) {
       case ' ':
         e.preventDefault();
+        e.stopPropagation();
+        document.activeElement?.blur?.();
         if (e.repeat) return;
-        if (game.phase === 'idle' || game.phase === 'revealed') return;
         buzz();
         break;
-      case 'n': case 'N': e.preventDefault(); if (!$('next').disabled) next(); break;
-      case 's': case 'S': if (!$('skip').disabled) next(); break;
-      case 'p': case 'P': togglePause(); break;
-      case 'e': case 'E': toggleSettings(); break;
+      case 'n': e.preventDefault(); if (!$('next').disabled) next(); break;
+      case 's': if (!$('skip').disabled) next(); break;
+      case 'p': togglePause(); break;
+      case 'e': toggleSettings(); break;
     }
-  });
+  }, true);
+  // a focused button would still "click" on space keyup
+  document.addEventListener('keyup', e => {
+    if (e.key === ' ' && !typing(document.activeElement)) e.preventDefault();
+  }, true);
 }
 
 function toggleSettings () {

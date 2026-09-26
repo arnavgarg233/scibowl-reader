@@ -70,9 +70,19 @@
           </div>
         </div>
 
-        <div class="mb-1">Categories:</div>
-        <div class="d-flex flex-wrap gap-1 mb-2" id="category-buttons"></div>
-        <div class="d-flex flex-wrap gap-1 mb-2" id="format-buttons"></div>
+        <div id="filter-settings">
+          <div class="mb-1">Subjects:</div>
+          <div class="d-flex flex-wrap gap-1 mb-2" id="category-buttons"></div>
+          <div class="mb-1">Difficulty <a href="https://science.osti.gov/-/media/wdts/nsb/pdf/NSB-Resources/NSB-Coordinator-Manual.pdf" target="_blank" rel="noopener" class="small" title="NSB coordinator manual: rounds 1–10 are about equal; from round 11 each round gets harder, round 17 hardest">(by round)</a>:</div>
+          <div class="d-flex flex-wrap gap-1 mb-2" id="difficulty-buttons"></div>
+          <div class="d-flex flex-wrap gap-1 mb-2" id="format-buttons"></div>
+          <select class="form-select form-select-sm mb-1" id="pool" aria-label="Question pool">
+            <option value="all">All questions</option>
+            <option value="unseen">Only ones I haven't seen</option>
+            <option value="missed">Review ones I missed</option>
+          </select>
+          <div class="small text-body-secondary mb-2" id="match-count"></div>
+        </div>
 
         <div class="text-center my-2">
           <button class="btn btn-info btn-sm" id="stats-button" type="button" data-bs-toggle="modal" data-bs-target="#stats-modal">Stats</button>
@@ -100,13 +110,17 @@
           <label class="form-check-label" for="enable-timer">Enable timer</label>
         </div>
         <div class="form-check form-switch">
+          <input class="form-check-input" id="sound" type="checkbox" role="switch">
+          <label class="form-check-label" for="sound">Buzzer sound</label>
+        </div>
+        <div class="form-check form-switch">
           <input class="form-check-input" id="tts" type="checkbox" role="switch">
           <label class="form-check-label" for="tts">Read aloud (voice)</label>
         </div>
         <select class="form-select form-select-sm my-1 d-none" id="voice" aria-label="Voice"></select>
 
         <div class="mt-2">
-          <label for="reading-speed" class="form-label mb-0">Reading speed: <span id="reading-speed-display">50</span></label>
+          <label for="reading-speed" class="form-label mb-0">Reading speed: <span id="reading-speed-display">50</span> <span class="text-body-secondary small" id="wpm-display"></span></label>
           <input class="form-range" id="reading-speed" type="range" min="0" max="100" step="5">
         </div>
 
@@ -128,6 +142,7 @@
             <span class="text-nowrap"><kbd>p</kbd> = pause / resume</span><br>
             <span class="text-nowrap"><kbd>e</kbd> = show / hide settings</span><br>
             <span class="text-nowrap"><kbd>enter</kbd> = submit answer</span><br>
+            <span class="text-nowrap"><kbd>c</kbd> / <kbd>w</kbd> = mark yourself correct / wrong</span><br>
             MC: type <kbd>w</kbd> <kbd>x</kbd> <kbd>y</kbd> <kbd>z</kbd> or the choice text.
           </p>
         </div>
@@ -143,8 +158,8 @@
         </form>
         <div class="d-none my-2 gap-2" id="judge-group">
           <span class="align-self-center me-1">Did you get it?</span>
-          <button class="btn btn-success" id="judge-correct" type="button"><i class="bi bi-check-lg"></i> Correct</button>
-          <button class="btn btn-danger" id="judge-wrong" type="button"><i class="bi bi-x-lg"></i> Wrong</button>
+          <button class="btn btn-success" id="judge-correct" type="button"><i class="bi bi-check-lg"></i> Correct <kbd>c</kbd></button>
+          <button class="btn btn-danger" id="judge-wrong" type="button"><i class="bi bi-x-lg"></i> Wrong <kbd>w</kbd></button>
         </div>
 
         <div class="d-flex justify-content-between flex-wrap">

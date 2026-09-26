@@ -106,7 +106,7 @@ body {
 .katex { font-size: 1.05em; }
 
 #sets-menu { max-height: 320px; overflow-y: auto; }
-#category-buttons .btn, #format-buttons .btn { --bs-btn-padding-y: .2rem; --bs-btn-padding-x: .5rem; --bs-btn-font-size: .85rem; }
+#category-buttons .btn, #format-buttons .btn, #difficulty-buttons .btn { --bs-btn-padding-y: .2rem; --bs-btn-padding-x: .5rem; --bs-btn-font-size: .85rem; }
 
 .stats-table td, .stats-table th { text-align: right; }
 .stats-table td:first-child, .stats-table th:first-child { text-align: left; }
@@ -114,3 +114,8 @@ body {
 @media (max-width: 991.98px) {
   #buttons { margin-left: 0; }
 }
+
+.badge.diff-standard { background: var(--bs-secondary-bg); color: var(--bs-secondary-color); border: 1px solid var(--bs-border-color); }
+.badge.diff-hard { background: #fd7e14; }
+.badge.diff-hardest { background: #dc3545; }
+#judge-group kbd { font-size: .7em; opacity: .8; }
