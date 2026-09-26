@@ -28,6 +28,7 @@ const DEFAULT_SETTINGS = {
   answerTime: 10,
   sound: true,
   shuffleRound: false,
+  hideText: false,
   difficulties: ['standard', 'hard', 'hardest'],
   pool: 'all', // all | unseen | missed
   theme: 'auto'
@@ -180,10 +181,25 @@ function prefetchUpcoming (currentChunks = []) {
   neural.retain([...currentChunks, ...next].map(c => c.key));
 }
 
+// the question as read so far, or a placeholder when listening without text
+function drawQuestion (buzzAt = -1) {
+  if (game.hideText) {
+    const msg = {
+      reading: '<i class="bi bi-volume-up"></i> Listening… <span class="small">(text shows after the answer)</span>',
+      dead: game.kind === 'bonus' ? '<i class="bi bi-hourglass-split"></i> Answer the bonus' : '<i class="bi bi-hourglass-split"></i> Buzz now',
+      answering: '<i class="bi bi-pencil"></i> Your answer…',
+      judging: '<i class="bi bi-question-circle"></i> Mark yourself below'
+    }[game.phase] || '';
+    $('question').innerHTML = `<span class="text-body-secondary">${msg}</span>`;
+    return;
+  }
+  $('question').innerHTML = renderTokens(game.toks, game.wordIndex, buzzAt);
+}
+
 function revealUpTo (i) {
   if (i > game.wordIndex) {
     game.wordIndex = i;
-    $('question').innerHTML = renderTokens(game.toks, game.wordIndex);
+    drawQuestion();
   }
 }
 
@@ -393,6 +409,9 @@ function startQuestion (q) {
   const { header, times } = readingTimes(q, game.toks);
   game.readTimes = times;
   const mode = voiceMode();
+  // listen-only: needs a voice actually reading, otherwise the text is the question
+  game.hideText = settings.hideText && mode !== 'off';
+  drawQuestion();
   if (mode === 'neural') speakNeural();
   else if (mode === 'browser') speakBrowser();
   else {
@@ -408,7 +427,7 @@ function readNext () {
   if (game.wordIndex >= game.toks.length) return doneReading();
   const i = game.wordIndex;
   game.wordIndex++;
-  $('question').innerHTML = renderTokens(game.toks, game.wordIndex);
+  drawQuestion();
   // human reading pace; schedule against the ideal timeline so slow frames don't add drift
   const now = performance.now();
   game.nextWordAt = Math.max(game.nextWordAt || now, now - 250) + game.readTimes[i] * 1000 / speedFactor(settings.readingSpeed);
@@ -425,7 +444,7 @@ function stopReading () {
 
 function doneReading () {
   game.wordIndex = game.toks.length;
-  $('question').innerHTML = renderTokens(game.toks, game.wordIndex);
+  drawQuestion();
   if (game.kind === 'bonus') {
     // bonuses: no buzz needed, the clock starts right away
     game.phase = 'dead';
@@ -448,14 +467,14 @@ function buzz () {
     stopTimer();
     beep();
     // show where you buzzed right away
-    $('question').innerHTML = renderTokens(game.toks, game.wordIndex, game.buzzIndex);
+    drawQuestion(game.buzzIndex);
     openAnswer(settings.answerTime);
   } else {
     // answering a bonus early: show the rest of it and open the box
     stopReading();
     if (game.phase === 'reading') {
       game.wordIndex = game.toks.length;
-      $('question').innerHTML = renderTokens(game.toks, game.wordIndex);
+      drawQuestion();
     }
     openAnswer(game.phase === 'dead' ? Math.max(game.timer.left, 1) : settings.bonusTime);
   }
@@ -464,6 +483,7 @@ function buzz () {
 function openAnswer (seconds) {
   stopTimer();
   game.phase = 'answering';
+  if (game.hideText) drawQuestion();
   if (settings.typeToAnswer) {
     $('answer-input-group').classList.remove('d-none');
     const input = $('answer-input');
@@ -497,6 +517,7 @@ function submitAnswer () {
 }
 
 function showJudge () {
+  if (game.hideText) drawQuestion();
   $('judge-group').classList.remove('d-none');
   $('judge-group').classList.add('d-flex');
   $('judge-correct').focus();
@@ -867,10 +888,12 @@ function initSettingsUi () {
   sw('enable-timer', 'timer');
   sw('sound', 'sound');
   sw('shuffle-round', 'shuffleRound', true);
+  sw('hide-text', 'hideText');
   // read aloud
   if (settings.tts) { settings.voiceMode = 'browser'; delete settings.tts; } // old setting
   $('neural-voice').replaceChildren(...NEURAL_VOICES.map(([id, name]) => new Option(name, id, false, id === settings.neuralVoice)));
   const syncVoice = () => {
+    $('hide-text-row').classList.toggle('d-none', settings.voiceMode === 'off');
     $('voice').classList.toggle('d-none', settings.voiceMode !== 'browser');
     $('neural-voice').classList.toggle('d-none', settings.voiceMode !== 'neural');
     $('voice-status').classList.toggle('d-none', settings.voiceMode !== 'neural');

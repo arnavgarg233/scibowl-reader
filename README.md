@@ -19,7 +19,8 @@ questions are revealed word by word, <kbd>space</kbd> buzzes, you type the answe
   answers it can't check
 - Read aloud with a human-like AI voice ([Kokoro](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX),
   runs entirely in your browser: WebGPU when available, one-time ~325 MB download, then cached) or
-  the browser's built-in voices. Math is spoken the way a moderator reads it
+  the browser's built-in voices. Math is spoken the way a moderator reads it. Optional
+  listen-only mode hides the text until the answer is revealed, like a real match
 - Light / night themes, per-category stats, question history
 
 Keys: `space` buzz, `n` next, `s` skip, `p` pause, `e` settings, `c` / `w` mark yourself right / wrong.
