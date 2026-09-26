@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en" data-bs-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SciBowl Reader</title>
+  <meta name="description" content="Practice National Science Bowl high school questions: read-along tossups and bonuses, spacebar buzzer, typed answers.">
+  <script>
+    // set theme before paint to avoid a flash
+    (function () {
+      let t = 'auto';
+      try { t = JSON.parse(localStorage.getItem('sbr-settings') || '{}').theme || 'auto'; } catch (e) {}
+      if (t === 'auto') t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-bs-theme', t);
+    })();
+  </script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <nav class="navbar navbar-expand-lg" id="navbar">
+    <div class="container-fluid">
+      <a class="navbar-brand ms-1 py-0" id="logo" href="./">
+        <span class="logo-prefix">SciBowl</span><span class="logo-suffix">Reader</span>
+      </a>
+      <div class="d-flex align-items-center gap-2">
+        <span class="text-body-secondary small d-none d-md-inline" id="question-count"></span>
+        <button class="btn btn-link nav-link px-2" id="theme-toggle" type="button" title="Toggle theme">
+          <i class="bi bi-circle-half"></i>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <div class="container-fluid mt-3 mb-5 pb-5 px-xxl-5">
+    <div class="row" id="info">
+      <!-- settings column -->
+      <div class="options col-12 col-lg-3 order-lg-1 mb-5" id="settings">
+        <div class="timer d-block p-1 text-center" id="timer"><span class="face">0</span><span class="fraction">.0</span></div>
+        <hr>
+
+        <label class="form-label mb-1" for="question-type">Questions:</label>
+        <select class="form-select mb-2" id="question-type">
+          <option value="match">Toss-up → bonus (match rules)</option>
+          <option value="tossups">Toss-ups only</option>
+          <option value="bonuses">Bonuses only</option>
+        </select>
+
+        <label class="form-label mb-1" for="set-mode">Choose a mode:</label>
+        <select class="form-select mb-2" id="set-mode">
+          <option value="random">Random questions</option>
+          <option value="packet">Play a round in order</option>
+        </select>
+
+        <div id="packet-settings" class="d-none">
+          <div class="input-group mb-2">
+            <select class="form-select" id="packet-set" aria-label="Set"></select>
+            <select class="form-select" id="packet-round" aria-label="Round"></select>
+          </div>
+        </div>
+
+        <div id="random-settings">
+          <div class="dropdown mb-2">
+            <button class="btn btn-outline-secondary dropdown-toggle w-100 text-start" id="sets-button" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">All sets</button>
+            <div class="dropdown-menu p-2 w-100" id="sets-menu"></div>
+          </div>
+        </div>
+
+        <div class="mb-1">Categories:</div>
+        <div class="d-flex flex-wrap gap-1 mb-2" id="category-buttons"></div>
+        <div class="d-flex flex-wrap gap-1 mb-2" id="format-buttons"></div>
+
+        <div class="text-center my-2">
+          <button class="btn btn-info btn-sm" id="stats-button" type="button" data-bs-toggle="modal" data-bs-target="#stats-modal">Stats</button>
+          <button class="btn btn-warning btn-sm" id="clear-stats" type="button">Clear stats</button>
+        </div>
+
+        <div class="form-check form-switch">
+          <input class="form-check-input" id="type-to-answer" type="checkbox" role="switch">
+          <label class="form-check-label" for="type-to-answer">Type to answer</label>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" id="always-bonus" type="checkbox" role="switch">
+          <label class="form-check-label" for="always-bonus">Read bonus even if toss-up missed</label>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" id="show-history" type="checkbox" role="switch">
+          <label class="form-check-label" for="show-history">Show question history</label>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" id="show-set-name" type="checkbox" role="switch">
+          <label class="form-check-label" for="show-set-name">Show set name</label>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" id="enable-timer" type="checkbox" role="switch">
+          <label class="form-check-label" for="enable-timer">Enable timer</label>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" id="tts" type="checkbox" role="switch">
+          <label class="form-check-label" for="tts">Read aloud (voice)</label>
+        </div>
+        <select class="form-select form-select-sm my-1 d-none" id="voice" aria-label="Voice"></select>
+
+        <div class="mt-2">
+          <label for="reading-speed" class="form-label mb-0">Reading speed: <span id="reading-speed-display">50</span></label>
+          <input class="form-range" id="reading-speed" type="range" min="0" max="100" step="5">
+        </div>
+
+        <div class="row g-1 small align-items-center">
+          <div class="col-4"><label class="form-label mb-0" for="tossup-time">Toss-up s</label>
+            <input class="form-control form-control-sm" id="tossup-time" type="number" min="1" max="60"></div>
+          <div class="col-4"><label class="form-label mb-0" for="bonus-time">Bonus s</label>
+            <input class="form-control form-control-sm" id="bonus-time" type="number" min="1" max="120"></div>
+          <div class="col-4"><label class="form-label mb-0" for="answer-time">Answer s</label>
+            <input class="form-control form-control-sm" id="answer-time" type="number" min="1" max="60"></div>
+        </div>
+
+        <div class="d-none d-lg-block">
+          <hr>
+          <p class="small mb-0">
+            <span class="text-nowrap"><kbd>space</kbd> = buzz / answer bonus</span><br>
+            <span class="text-nowrap"><kbd>n</kbd> = next question</span><br>
+            <span class="text-nowrap"><kbd>s</kbd> = skip</span><br>
+            <span class="text-nowrap"><kbd>p</kbd> = pause / resume</span><br>
+            <span class="text-nowrap"><kbd>e</kbd> = show / hide settings</span><br>
+            <span class="text-nowrap"><kbd>enter</kbd> = submit answer</span><br>
+            MC: type <kbd>w</kbd> <kbd>x</kbd> <kbd>y</kbd> <kbd>z</kbd> or the choice text.
+          </p>
+        </div>
+      </div>
+
+      <!-- question column -->
+      <div class="col-12 col-lg-9" id="content">
+        <form id="answer-form" autocomplete="off">
+          <div class="input-group d-none my-2" id="answer-input-group">
+            <input class="form-control" id="answer-input" type="text" placeholder="Enter answer" autocomplete="off" autocapitalize="off" spellcheck="false">
+            <button class="btn btn-success" id="answer-submit" type="submit">Submit</button>
+          </div>
+        </form>
+        <div class="d-none my-2 gap-2" id="judge-group">
+          <span class="align-self-center me-1">Did you get it?</span>
+          <button class="btn btn-success" id="judge-correct" type="button"><i class="bi bi-check-lg"></i> Correct</button>
+          <button class="btn btn-danger" id="judge-wrong" type="button"><i class="bi bi-x-lg"></i> Wrong</button>
+        </div>
+
+        <div class="d-flex justify-content-between flex-wrap">
+          <span id="statline"></span>
+          <span class="ps-lg-5 me-lg-2" id="question-metadata"><b id="question-info"></b></span>
+        </div>
+
+        <div class="mt-2" id="category-line"></div>
+        <div class="mt-1" id="question"></div>
+        <div id="question-figure"></div>
+        <a class="mt-1 mt-lg-3 p-0 btn btn-link float-end d-none" id="toggle-correct" href="#">I was wrong</a>
+        <div class="mt-1 mt-lg-3" id="answer"></div>
+        <div id="answer-figure"></div>
+        <ul class="room-history list-unstyled mt-3 pt-2" id="room-history"></ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="container-fluid py-3 px-xxl-5 position-fixed bottom-0 bg-body" id="button-bar">
+    <div class="row">
+      <div class="col-12 col-lg-9" id="buttons">
+        <button class="btn btn-primary" id="next" type="button" title="Shortcut: n">Next</button>
+        <button class="btn btn-secondary" id="skip" type="button" title="Shortcut: s" disabled>Skip</button>
+        <button class="btn btn-primary" id="pause" type="button" title="Shortcut: p" disabled><i class="bi bi-pause-fill"></i></button>
+        <button class="btn btn-danger" id="toggle-settings" type="button" title="Shortcut: e"><i class="bi bi-gear"></i></button>
+        <button class="btn btn-primary float-end" id="buzz" type="button" title="Shortcut: space" disabled>Buzz</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal fade" id="stats-modal" tabindex="-1">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Stats by category</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body" id="stats-body"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
