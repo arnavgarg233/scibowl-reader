@@ -1,5 +1,6 @@
 import { checkAnswer, parseAnswer, stripLatex } from './check.js';
 import { NeuralVoice, NEURAL_VOICES, alignChunk, rankBrowserVoices, speechChunks } from './voice.js';
+import { countdown } from './timer.js';
 
 const CATEGORIES = ['Biology', 'Chemistry', 'Earth and Space', 'Energy', 'Math', 'Physics', 'General Science'];
 const FORMATS = { mc: 'Multiple Choice', sa: 'Short Answer' };
@@ -212,17 +213,21 @@ function playChunk (audio, chunk, gen) {
     game.voiceSource = src;
     const start = ctx.currentTime;
     // when each word starts in this clip (phoneme lengths pinned to the real pauses)
-    const { starts } = alignChunk(chunk, audio.samples, audio.rate, audio.weights);
+    const { starts, voicedEnd } = alignChunk(chunk, audio.samples, audio.rate, audio.weights);
+    // move on (and start the NSB clock) when the voice stops, not after the clip's silent tail
+    let done = false;
+    const finish = () => { if (!done) { done = true; clearInterval(tick); resolve(); } };
     const LEAD = 0.04; // show a word just as it begins
     const tick = setInterval(() => {
       if (gen !== game.speechGen) { clearInterval(tick); return; }
+      if (ctx.currentTime - start >= voicedEnd) { finish(); return; }
       const t = ctx.currentTime - start + LEAD;
       // silent tokens (symbols a read-as description replaces) share the next word's start
       let k = 0;
       while (k < starts.length && starts[k] <= t) k++;
       if (k) revealUpTo(chunk.idxs[k - 1] + 1);
     }, 25);
-    src.onended = () => { clearInterval(tick); if (game.voiceSource === src) game.voiceSource = null; resolve(); };
+    src.onended = () => { if (game.voiceSource === src) game.voiceSource = null; finish(); };
     src.start();
   });
 }
@@ -269,7 +274,7 @@ const game = {
   paused: false,
   buzzIndex: -1,
   readTimeout: null,
-  timer: { interval: null, remaining: 0, onEnd: null },
+  timer: { clock: null, left: 0 },
   last: null, // last scored result, for "I was wrong"
   pendingBonus: null,
   speechGen: 0,
@@ -389,12 +394,14 @@ function startQuestion (q) {
   else readNext();
 }
 
-function wordDelay (tok, nextTok) {
+function wordDelay (tok, nextTok, isLast = false) {
   // qbreader's pacing: longer words and sentence/comma pauses take longer
   const plain = stripLatex(tok.text);
   // pronunciation guides like [kor-ee-AWN-ik] aren't read aloud by moderators
   if (/^\[[^\]\s]*\]\W*$/.test(plain)) return 0;
   let t = Math.log(Math.max(plain.length, 1)) + 1;
+  // the NSB clock starts the moment the last word is finished, so no pause after it
+  if (isLast) return t * 0.9 * (140 - settings.readingSpeed);
   if (/[a-z0-9)][.?!]["”]?$/i.test(plain)) t += 2.5;
   else if (/[,;:]["”]?$/.test(plain)) t += 1.5;
   if (nextTok && nextTok.br) t += 1.5; // beat between answer choices
@@ -409,7 +416,7 @@ function readNext () {
   $('question').innerHTML = renderTokens(game.toks, game.wordIndex);
   // schedule against the ideal timeline so slow frames don't accumulate drift
   const now = performance.now();
-  game.nextWordAt = Math.max(game.nextWordAt || now, now - 250) + wordDelay(tok, game.toks[game.wordIndex]);
+  game.nextWordAt = Math.max(game.nextWordAt || now, now - 250) + wordDelay(tok, game.toks[game.wordIndex], game.wordIndex === game.toks.length);
   game.readTimeout = setTimeout(readNext, Math.max(0, game.nextWordAt - now));
 }
 
@@ -434,7 +441,7 @@ function doneReading () {
     // bonuses: no buzz needed, the clock starts right away
     game.phase = 'dead';
     if (settings.typeToAnswer) openAnswer(settings.bonusTime);
-    else startTimer(settings.bonusTime, () => openAnswer(0));
+    else startTimer(settings.bonusTime, () => openAnswer(0), { warn: true });
   } else {
     game.phase = 'dead';
     startTimer(settings.tossupTime, () => finishUnanswered(false));
@@ -461,7 +468,7 @@ function buzz () {
       game.wordIndex = game.toks.length;
       $('question').innerHTML = renderTokens(game.toks, game.wordIndex);
     }
-    openAnswer(game.phase === 'dead' ? Math.max(game.timer.remaining / 10, 1) : settings.bonusTime);
+    openAnswer(game.phase === 'dead' ? Math.max(game.timer.left, 1) : settings.bonusTime);
   }
 }
 
@@ -474,7 +481,7 @@ function openAnswer (seconds) {
     input.value = '';
     input.placeholder = game.q.format === 'mc' ? 'Enter answer (W, X, Y, Z or the choice)' : 'Enter answer';
     input.focus();
-    startTimer(seconds, () => submitAnswer());
+    startTimer(seconds, () => submitAnswer(), { warn: game.kind === 'bonus' });
   } else {
     // self-judged: reveal immediately and ask
     game.phase = 'judging';
@@ -668,37 +675,27 @@ function setTimerDisplay (seconds) {
   const tenths = Math.max(0, Math.ceil(seconds * 10 - 1e-6));
   $('timer').querySelector('.face').textContent = Math.floor(tenths / 10);
   $('timer').querySelector('.fraction').textContent = '.' + (tenths % 10);
-  $('timer').classList.toggle('low', tenths <= 30 && game.timer.interval !== null);
 }
 
-function startTimer (seconds, onEnd) {
+function startTimer (seconds, onEnd, { warn = false } = {}) {
   stopTimer();
-  game.timer.remaining = Math.round(seconds * 10);
-  game.timer.onEnd = onEnd;
-  if (!settings.timer) {
-    setTimerDisplay(seconds);
-    return; // untimed: wait for the player
-  }
-  let left = seconds * 1000;
-  let last = performance.now();
-  game.timer.interval = setInterval(() => {
-    const now = performance.now();
-    if (!game.paused) left -= now - last;
-    last = now;
-    game.timer.remaining = Math.max(0, Math.ceil(left / 100));
-    setTimerDisplay(left / 1000);
-    if (left <= 0) {
-      stopTimer();
-      beep(330, 0.35);
-      onEnd();
-    }
-  }, 50);
+  game.timer.left = seconds;
   setTimerDisplay(seconds);
+  if (!settings.timer) return; // untimed: wait for the player
+  game.timer.clock = countdown({
+    seconds,
+    isPaused: () => game.paused,
+    onTick: left => { game.timer.left = left; setTimerDisplay(left); },
+    // NSB bonus: the timekeeper calls "5 SECONDS" after 15 of the 20 seconds
+    warnAt: warn ? 5 : null,
+    onWarn: () => { $('timer').classList.add('low'); beep(660, 0.12); },
+    onEnd: () => { game.timer.clock = null; $('timer').classList.remove('low'); beep(330, 0.35); onEnd(); }
+  });
 }
 
 function stopTimer () {
-  clearInterval(game.timer.interval);
-  game.timer.interval = null;
+  game.timer.clock?.stop();
+  game.timer.clock = null;
   $('timer').classList.remove('low');
 }
 

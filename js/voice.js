@@ -322,5 +322,5 @@ export function alignChunk (chunk, samples, rate, weights = null) {
     const [p0, a0] = anchors[k - 1]; const [p1, a1] = anchors[k];
     return p1 === p0 ? a1 : a0 + (a1 - a0) * (p - p0) / (p1 - p0);
   };
-  return { starts: startPos.map(timeAt), ends: startPos.map((p, i) => timeAt(p + w[i])) };
+  return { starts: startPos.map(timeAt), ends: startPos.map((p, i) => timeAt(p + w[i])), voicedEnd: t1 };
 }
