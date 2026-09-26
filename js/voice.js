@@ -197,8 +197,7 @@ export function spokenTokens (toks) {
 // audio starts quickly, then sentence-sized pieces, one per answer choice.
 export function speechChunks (q, toks) {
   const words = spokenTokens(toks);
-  const header = `${q.part === 'tossup' ? 'Toss-up' : 'Bonus'} ${q.num}. ${q.category}, ${q.format === 'mc' ? 'multiple choice' : 'short answer'}.`;
-  const chunks = [{ text: header, idxs: [], offsets: [], words: [] }];
+  const chunks = [{ text: headerText(q), idxs: [], offsets: [], words: [] }];
   let cur = [];
   const flush = () => {
     if (!cur.length) return;
@@ -324,3 +323,41 @@ export function alignChunk (chunk, samples, rate, weights = null) {
   };
   return { starts: startPos.map(timeAt), ends: startPos.map((p, i) => timeAt(p + w[i])), voicedEnd: t1 };
 }
+
+// ---------- human reading pace (text-only mode) ----------
+
+// Fitted to the neural voice reading 20 NSB questions at normal speed (within ~4% per
+// question): 0.182 s per syllable, 0.58 s per sentence or answer-choice "clip" (the
+// beat before it plus the slowing at its end), 0.47 s per comma or inner sentence
+// break. Over all 12,023 questions that's 153 words per minute, a natural read-aloud pace.
+const SEC_PER_SYLLABLE = 0.182;
+const CLIP = 0.576;
+const LEAD = 0.32; // part of CLIP that comes before a clip's first word
+const PUNCT = 0.466;
+
+export function speedFactor (setting) {
+  return setting <= 50 ? 0.6 + 0.4 * setting / 50 : 1 + 0.8 * (setting - 50) / 50;
+}
+
+export function headerText (q) {
+  return `${q.part === 'tossup' ? 'Toss-up' : 'Bonus'} ${q.num}. ${q.category}, ${q.format === 'mc' ? 'multiple choice' : 'short answer'}.`;
+}
+
+// Seconds to say the header, and each token plus the pause after it, at 1.0x, in the
+// same sentence / answer-choice pieces the voice reads.
+export function readingTimes (q, toks) {
+  const words = spokenTokens(toks);
+  const header = syllables(headerText(q)) * SEC_PER_SYLLABLE + CLIP + LEAD;
+  const chunkEnds = new Set(speechChunks(q, toks).slice(1).map(c => c.idxs[c.idxs.length - 1]));
+  const times = toks.map((t, i) => {
+    const w = t.br ? t.text.replace(')', '') : words[i];
+    let sec = w ? syllables(w) * SEC_PER_SYLLABLE : 0; // symbols a read-as covers, pronunciation guides: 0
+    if (i === toks.length - 1) return sec + (CLIP - LEAD); // then the clock starts
+    if (chunkEnds.has(i)) sec += CLIP;
+    else if (w && /[,;:.?!]["”)]?$/.test(w)) sec += PUNCT;
+    return sec;
+  });
+  return { header, times };
+}
+
+export function naturalWpm () { return 153; } // readingTimes at 1.0x over all questions

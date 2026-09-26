@@ -1,5 +1,5 @@
 import { checkAnswer, parseAnswer, stripLatex } from './check.js';
-import { NeuralVoice, NEURAL_VOICES, alignChunk, rankBrowserVoices, speechChunks } from './voice.js';
+import { NeuralVoice, NEURAL_VOICES, alignChunk, naturalWpm, rankBrowserVoices, readingTimes, speechChunks, speedFactor } from './voice.js';
 import { countdown } from './timer.js';
 
 const CATEGORIES = ['Biology', 'Chemistry', 'Earth and Space', 'Energy', 'Math', 'Physics', 'General Science'];
@@ -27,6 +27,7 @@ const DEFAULT_SETTINGS = {
   bonusTime: 20,
   answerTime: 10,
   sound: true,
+  shuffleRound: false,
   difficulties: ['standard', 'hard', 'hardest'],
   pool: 'all', // all | unseen | missed
   theme: 'auto'
@@ -150,7 +151,7 @@ const neural = new NeuralVoice(status => {
   }
 });
 
-function neuralSpeed () { return Math.round((0.8 + settings.readingSpeed / 100 * 0.6) * 20) / 20; }
+function neuralSpeed () { return Math.round(speedFactor(settings.readingSpeed) * 20) / 20; }
 
 function voiceMode () {
   if (settings.voiceMode === 'neural') return neural.isReady ? 'neural' : 'off'; // silent until the model is ready
@@ -245,7 +246,7 @@ function speakBrowser () {
     const u = new SpeechSynthesisUtterance(text);
     const v = voices.find(x => x.name === settings.voice);
     if (v) u.voice = v;
-    u.rate = 0.6 + settings.readingSpeed / 100;
+    u.rate = speedFactor(settings.readingSpeed);
     u.onboundary = (e) => {
       if (!live() || !idxs.length) return;
       let k = 0;
@@ -296,6 +297,7 @@ function buildQueue () {
   if (settings.mode === 'packet') {
     game.queue = ALL.filter(q => q.set === +settings.packetSet && q.round === settings.packetRound && q.part === wantPart)
       .sort((a, b) => a.num - b.num);
+    if (settings.shuffleRound) shuffle(game.queue);
   } else {
     game.queue = shuffle(matching());
   }
@@ -388,42 +390,29 @@ function startQuestion (q) {
   setTimerDisplay(q.part === 'bonus' ? settings.bonusTime : settings.tossupTime);
   game.nextWordAt = 0;
   $('pause').innerHTML = '<i class="bi bi-pause-fill"></i>';
+  const { header, times } = readingTimes(q, game.toks);
+  game.readTimes = times;
   const mode = voiceMode();
   if (mode === 'neural') speakNeural();
   else if (mode === 'browser') speakBrowser();
-  else readNext();
-}
-
-function wordDelay (tok, nextTok, isLast = false) {
-  // qbreader's pacing: longer words and sentence/comma pauses take longer
-  const plain = stripLatex(tok.text);
-  // pronunciation guides like [kor-ee-AWN-ik] aren't read aloud by moderators
-  if (/^\[[^\]\s]*\]\W*$/.test(plain)) return 0;
-  let t = Math.log(Math.max(plain.length, 1)) + 1;
-  // the NSB clock starts the moment the last word is finished, so no pause after it
-  if (isLast) return t * 0.9 * (140 - settings.readingSpeed);
-  if (/[a-z0-9)][.?!]["”]?$/i.test(plain)) t += 2.5;
-  else if (/[,;:]["”]?$/.test(plain)) t += 1.5;
-  if (nextTok && nextTok.br) t += 1.5; // beat between answer choices
-  return t * 0.9 * (140 - settings.readingSpeed);
+  else {
+    // wait while the moderator would be saying "Toss-up 5. Physics, short answer."
+    const wait = header * 1000 / speedFactor(settings.readingSpeed);
+    game.nextWordAt = performance.now() + wait;
+    game.readTimeout = setTimeout(readNext, wait);
+  }
 }
 
 function readNext () {
   if (game.phase !== 'reading' || game.paused) return;
   if (game.wordIndex >= game.toks.length) return doneReading();
-  const tok = game.toks[game.wordIndex];
+  const i = game.wordIndex;
   game.wordIndex++;
   $('question').innerHTML = renderTokens(game.toks, game.wordIndex);
-  // schedule against the ideal timeline so slow frames don't accumulate drift
+  // human reading pace; schedule against the ideal timeline so slow frames don't add drift
   const now = performance.now();
-  game.nextWordAt = Math.max(game.nextWordAt || now, now - 250) + wordDelay(tok, game.toks[game.wordIndex], game.wordIndex === game.toks.length);
+  game.nextWordAt = Math.max(game.nextWordAt || now, now - 250) + game.readTimes[i] * 1000 / speedFactor(settings.readingSpeed);
   game.readTimeout = setTimeout(readNext, Math.max(0, game.nextWordAt - now));
-}
-
-// rough words-per-minute for the speed label
-function wpm (speed) {
-  const avg = (Math.log(6) + 1 + 0.35) * 0.9 * (140 - speed);
-  return Math.round(60000 / avg);
 }
 
 function stopReading () {
@@ -877,6 +866,7 @@ function initSettingsUi () {
   sw('show-set-name', 'showSetName', false, () => updateInfo(game.phase === 'revealed'));
   sw('enable-timer', 'timer');
   sw('sound', 'sound');
+  sw('shuffle-round', 'shuffleRound', true);
   // read aloud
   if (settings.tts) { settings.voiceMode = 'browser'; delete settings.tts; } // old setting
   $('neural-voice').replaceChildren(...NEURAL_VOICES.map(([id, name]) => new Option(name, id, false, id === settings.neuralVoice)));
@@ -897,12 +887,15 @@ function initSettingsUi () {
   syncVoice();
 
   $('reading-speed').value = settings.readingSpeed;
-  $('reading-speed-display').textContent = settings.readingSpeed;
-  $('wpm-display').textContent = `(~${wpm(settings.readingSpeed)} wpm)`;
+  const speedLabel = () => {
+    const f = speedFactor(settings.readingSpeed);
+    $('reading-speed-display').textContent = `${f.toFixed(2)}×`;
+    $('wpm-display').textContent = `(~${Math.round(naturalWpm() * f)} wpm${settings.readingSpeed === 50 ? ', natural' : ''})`;
+  };
+  speedLabel();
   $('reading-speed').addEventListener('input', e => {
     settings.readingSpeed = +e.target.value;
-    $('reading-speed-display').textContent = settings.readingSpeed;
-    $('wpm-display').textContent = `(~${wpm(settings.readingSpeed)} wpm)`;
+    speedLabel();
     settingsChanged(false);
   });
   for (const [id, key] of [['tossup-time', 'tossupTime'], ['bonus-time', 'bonusTime'], ['answer-time', 'answerTime']]) {
