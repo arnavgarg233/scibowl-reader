@@ -108,8 +108,11 @@ export function rankBrowserVoices (voices) {
 
 // ---------- turning question text into something a voice can say ----------
 
-const GREEK = { alpha: 'alpha', beta: 'beta', gamma: 'gamma', delta: 'delta', Delta: 'delta', epsilon: 'epsilon', theta: 'theta', lambda: 'lambda', mu: 'mu', pi: 'pi', rho: 'rho', sigma: 'sigma', Sigma: 'sigma', tau: 'tau', phi: 'phi', omega: 'omega', Omega: 'omega' };
-const POWERS = { 2: 'squared', 3: 'cubed' };
+const GREEK = { alpha: 'alpha', beta: 'beta', gamma: 'gamma', delta: 'delta', Delta: 'delta', epsilon: 'epsilon', varepsilon: 'epsilon', zeta: 'zeta', eta: 'eta', theta: 'theta', Theta: 'theta', lambda: 'lambda', mu: 'mu', nu: 'nu', xi: 'xi', pi: 'pi', rho: 'rho', sigma: 'sigma', Sigma: 'sigma', tau: 'tau', phi: 'phi', varphi: 'phi', Phi: 'phi', chi: 'chi', psi: 'psi', omega: 'omega', Omega: 'omega', ell: 'l', hbar: 'h bar', infty: 'infinity', circ: 'degrees', prime: 'prime', angle: 'angle', triangle: 'triangle', degree: 'degrees' };
+const FUNCS = { sin: 'sine', cos: 'cosine', tan: 'tangent', sec: 'secant', csc: 'cosecant', cot: 'cotangent', arcsin: 'arc sine', arccos: 'arc cosine', arctan: 'arc tangent', sinh: 'hyperbolic sine', cosh: 'hyperbolic cosine', tanh: 'hyperbolic tangent', ln: 'natural log', log: 'log', exp: 'e to the', det: 'the determinant of' };
+const SYMBOLS = { times: 'times', cdot: 'times', div: 'divided by', pm: 'plus or minus', mp: 'minus or plus', le: 'is less than or equal to', leq: 'is less than or equal to', ge: 'is greater than or equal to', geq: 'is greater than or equal to', ne: 'is not equal to', neq: 'is not equal to', approx: 'is approximately', sim: 'is approximately', propto: 'is proportional to', to: 'approaches', rightarrow: 'yields', longrightarrow: 'yields', leftarrow: 'is produced from', rightleftharpoons: 'is in equilibrium with', leftrightarrow: 'is in equilibrium with', perp: 'is perpendicular to', parallel: 'is parallel to', ldots: 'dot dot dot', cdots: 'dot dot dot', dots: 'dot dot dot', cup: 'union', cap: 'intersect', in: 'in', therefore: 'therefore', cong: 'is congruent to', deg: 'degrees' };
+const OP_WORDS = { '+': 'plus', '=': 'equals', '<': 'is less than', '>': 'is greater than', '×': 'times', '÷': 'divided by', '±': 'plus or minus', '≤': 'is less than or equal to', '≥': 'is greater than or equal to', '≠': 'is not equal to', '≈': 'is approximately', '→': 'yields', '*': 'times', '%': 'percent', '!': 'factorial' };
+const COMPOUND = /\b(plus|minus|times|over|equals|divided|to the|root)\b/;
 
 function ordinal (p) {
   if (!/^\d+$/.test(p)) return p;
@@ -117,30 +120,179 @@ function ordinal (p) {
   return p + (n >= 11 && n <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th'));
 }
 
-function mathToSpeech (tex, prevChar) {
-  let s = tex;
-  s = s.replace(/\\begin\{[bpv]?matrix\}[\s\S]*?\\end\{[bpv]?matrix\}/g, ' the matrix ');
-  for (let i = 0; i < 3; i++) {
-    s = s.replace(/\\[dt]?frac\{([^{}]*)\}\{([^{}]*)\}/g, ' $1 over $2 ');
-    s = s.replace(/\\sqrt\{([^{}]*)\}/g, ' the square root of $1 ');
+// tiny LaTeX reader: characters, \commands, {groups}, ^ and _
+function parseTex (src) {
+  let i = 0;
+  const seq = (end) => {
+    const out = [];
+    while (i < src.length && src[i] !== end) {
+      const c = src[i];
+      if (c === '{') { i++; out.push({ t: 'group', c: seq('}') }); i++; } else if (c === '\\') {
+        const m = src.slice(i + 1).match(/^([A-Za-z]+|.)/);
+        i += 1 + (m ? m[1].length : 0);
+        out.push({ t: 'cmd', v: m ? m[1] : '' });
+      } else { out.push({ t: 'ch', v: c }); i++; }
+    }
+    return out;
+  };
+  return seq(null);
+}
+
+const plain = s => s.replace(/\s+/g, ' ').trim();
+const quantity = s => COMPOUND.test(s) ? `the quantity ${s},` : s;
+
+function power (arg, base) {
+  const raw = plain(arg.raw);
+  if (arg.structured) return ` to the power of ${arg.spoken},`; // e.g. a fraction exponent
+  if (/^\\?circ$/.test(raw) || raw === '°') return ' degrees';
+  if (/^\d*[+\-−–]$/.test(raw) && /[A-Za-z)\]]$/.test(base)) return ` ${raw.slice(0, -1)} ${raw.endsWith('+') ? 'plus' : 'minus'}`; // ion charge
+  if (raw === '2') return ' squared';
+  if (raw === '3') return ' cubed';
+  if (/^\d+$/.test(raw)) return ` to the ${ordinal(raw)}`;
+  if (/^[-−–]\d+$/.test(raw)) return ` to the negative ${raw.slice(1)}`;
+  if (/^[A-Za-z]$/.test(raw)) return ` to the ${raw}`;
+  if (raw === "'" || raw === '\\prime') return ' prime';
+  return ` to the power of ${arg.spoken},`;
+}
+
+// speak a node list; returns words
+function speakNodes (nodes) {
+  const items = []; // spoken pieces
+  let k = 0;
+  const arg = () => {
+    while (k < nodes.length && nodes[k].t === 'ch' && nodes[k].v === ' ') k++;
+    const n = nodes[k++];
+    if (!n) return { spoken: '', raw: '' };
+    const list = n.t === 'group' ? n.c : [n];
+    return { spoken: speakNodes(list), raw: rawText(list), structured: list.some(x => x.t === 'cmd' && !['circ', 'prime'].includes(x.v)) };
+  };
+  const last = () => items.length ? items[items.length - 1] : '';
+  const prevIsOperand = () => /[\w)\]]$/.test(plain(last())) && !/\b(plus|minus|times|equals|over|of|than|to)$/.test(plain(last()));
+  while (k < nodes.length) {
+    const n = nodes[k++];
+    if (n.t === 'group') { items.push(speakNodes(n.c)); continue; }
+    if (n.t === 'cmd') {
+      const v = n.v;
+      if (v === 'frac' || v === 'dfrac' || v === 'tfrac') {
+        const a = arg(); const b = arg();
+        items.push(`${quantity(a.spoken)} over ${quantity(b.spoken)}`);
+      } else if (v === 'sqrt') {
+        let idx = '';
+        if (nodes[k] && nodes[k].t === 'ch' && nodes[k].v === '[') { k++; let r = ''; while (k < nodes.length && !(nodes[k].t === 'ch' && nodes[k].v === ']')) r += rawText([nodes[k++]]); k++; idx = r; }
+        const a = arg();
+        const root = idx ? `the ${idx === '3' ? 'cube' : ordinal(idx)} root of` : 'the square root of';
+        items.push(`${root} ${COMPOUND.test(a.spoken) ? `the quantity ${a.spoken},` : a.spoken}`);
+      } else if (['text', 'textrm', 'mathrm', 'mathbf', 'mathit', 'operatorname', 'boldsymbol'].includes(v)) {
+        items.push(plain(arg().raw)); // words inside \text{...} are read as written
+      } else if (v === 'vec') items.push(`vector ${arg().spoken}`);
+      else if (v === 'hat') items.push(`${arg().spoken} hat`);
+      else if (v === 'overline' || v === 'bar') items.push(`${arg().spoken} bar`);
+      else if (v === 'binom') { const a = arg(); const b = arg(); items.push(`${a.spoken} choose ${b.spoken}`); } else if (v === 'begin') {
+        const env = arg().raw; const cells = []; let row = []; let cur = [];
+        while (k < nodes.length && !(nodes[k].t === 'cmd' && nodes[k].v === 'end')) {
+          const x = nodes[k++];
+          if (x.t === 'ch' && x.v === '&') { row.push(speakNodes(cur)); cur = []; } else if (x.t === 'cmd' && x.v === '\\') { row.push(speakNodes(cur)); cells.push(row); row = []; cur = []; } else cur.push(x);
+        }
+        k++; arg(); // \end{env}
+        if (cur.length || row.length) { row.push(speakNodes(cur)); cells.push(row); }
+        items.push(/matrix/.test(env) ? `the matrix with rows ${cells.map(r => r.map(plain).join(', ')).join('; ')};` : cells.map(r => r.join(' ')).join('; '));
+      } else if (v === 'int') {
+        let lo = ''; let hi = '';
+        for (let j = 0; j < 2; j++) {
+          if (nodes[k] && nodes[k].t === 'ch' && nodes[k].v === '_') { k++; lo = arg().spoken; } else if (nodes[k] && nodes[k].t === 'ch' && nodes[k].v === '^') { k++; hi = arg().spoken; }
+        }
+        items.push(lo || hi ? `the integral from ${lo} to ${hi} of` : 'the integral of');
+      } else if (v === 'sum' || v === 'prod') {
+        let lo = ''; let hi = '';
+        for (let j = 0; j < 2; j++) {
+          if (nodes[k] && nodes[k].t === 'ch' && nodes[k].v === '_') { k++; lo = arg().spoken; } else if (nodes[k] && nodes[k].t === 'ch' && nodes[k].v === '^') { k++; hi = arg().spoken; }
+        }
+        items.push(`the ${v === 'sum' ? 'sum' : 'product'}${lo ? ` from ${lo}` : ''}${hi ? ` to ${hi}` : ''} of`);
+      } else if (v === 'lim') {
+        let sub = '';
+        if (nodes[k] && nodes[k].t === 'ch' && nodes[k].v === '_') { k++; sub = arg().spoken; }
+        items.push(`the limit${sub ? ` as ${sub}` : ''} of`);
+      } else if (v === 'log' && nodes[k] && nodes[k].t === 'ch' && nodes[k].v === '_') { k++; items.push(`log base ${arg().spoken} of`); } else if (FUNCS[v]) items.push(FUNCS[v] + (v === 'exp' || v === 'det' ? '' : ' of'));
+      else if (GREEK[v]) items.push(GREEK[v]);
+      else if (SYMBOLS[v]) items.push(SYMBOLS[v]);
+      else if (v === '%' || v === '$' || v === '#' || v === '&') items.push(v === '%' ? 'percent' : v === '$' ? 'dollars' : '');
+      else items.push(' '); // \left \right \, \quad etc.
+      continue;
+    }
+    const c = n.v;
+    if (c === '^' || c === '_') {
+      const a = arg();
+      const base = plain(items.pop() || '');
+      if (c === '^') items.push(`${/\)$/.test(base) || COMPOUND.test(base) ? `the quantity ${base.replace(/[()]/g, '')},` : base}${power(a, base)}`);
+      else items.push(/^\d+$/.test(plain(a.raw)) && /[A-Za-z)]$/.test(base) && !/^[a-z]$/.test(base) ? `${base} ${plain(a.raw)}` : `${base} sub ${a.spoken}`);
+      continue;
+    }
+    if (/\d/.test(c) || (c === '.' && nodes[k] && /\d/.test(nodes[k].v || ''))) { // whole number
+      let num = c;
+      while (k < nodes.length && nodes[k].t === 'ch' && /[\d.,]/.test(nodes[k].v) && !(nodes[k].v === ',' && !/\d/.test((nodes[k + 1] || {}).v || ''))) num += nodes[k++].v;
+      items.push(num);
+      continue;
+    }
+    if (/[A-Za-z]/.test(c)) {
+      // "f(x)" -> "f of x"
+      const next = nodes[k];
+      if (/^[fgh]$/.test(c) && next && next.t === 'ch' && next.v === '(') { items.push(`${c} of`); k++; let depth = 1; const inner = []; while (k < nodes.length) { const x = nodes[k++]; if (x.t === 'ch' && x.v === '(') depth++; if (x.t === 'ch' && x.v === ')' && --depth === 0) break; inner.push(x); } items.push(speakNodes(inner)); continue; }
+      items.push(c === 'a' ? 'ay' : c);
+      continue;
+    }
+    if (c === '(' || c === '[') {
+      let depth = 1; const inner = []; const close = c === '(' ? ')' : ']';
+      while (k < nodes.length) { const x = nodes[k++]; if (x.t === 'ch' && x.v === c) depth++; if (x.t === 'ch' && x.v === close && --depth === 0) break; inner.push(x); }
+      const s = speakNodes(inner);
+      const followedByPower = nodes[k] && nodes[k].t === 'ch' && nodes[k].v === '^';
+      items.push(followedByPower ? `(${s})` : COMPOUND.test(s) && prevIsOperand() ? `times the quantity ${s},` : COMPOUND.test(s) ? `the quantity ${s},` : s);
+      continue;
+    }
+    if (c === '|') {
+      const inner = []; while (k < nodes.length && !(nodes[k].t === 'ch' && nodes[k].v === '|')) inner.push(nodes[k++]); k++;
+      items.push(`the absolute value of ${speakNodes(inner)},`);
+      continue;
+    }
+    if (c === '-' || c === '−' || c === '–') { items.push(prevIsOperand() ? 'minus' : 'negative'); continue; }
+    if (c === '/') { items.push('over'); continue; }
+    if (c === "'") { items.push('prime'); continue; }
+    if (OP_WORDS[c]) { items.push(OP_WORDS[c]); continue; }
+    if (c === ',' || c === ';' || c === ':') { items.push(c === ':' ? 'to' : ','); continue; }
+    // spaces and anything else: nothing
   }
-  s = s.replace(/\^\{?\\circ\}?/g, ' degrees');
-  // ion charges: OH^{-}, Fe^{3+}
-  s = s.replace(/\^\{(\d*)([+\-−–])\}/g, (m, n, sign) => ` ${n} ${sign === '+' ? 'plus' : 'minus'}`);
-  s = s.replace(/\^\{(-?)([^{}]*)\}/g, (m, neg, p) => neg ? ` to the negative ${ordinal(p)}` : POWERS[p] ? ` ${POWERS[p]}` : ` to the ${ordinal(p)}`);
-  s = s.replace(/\^(\w)/g, (m, p) => POWERS[p] ? ` ${POWERS[p]}` : ` to the ${p}`);
-  // chemistry-style subscript right after an element symbol is just the number
-  s = s.replace(/_\{([^{}]*)\}/g, (m, sub) => (/[A-Za-z)]/.test(prevChar || '') && /^\d+$/.test(sub)) ? ` ${sub}` : ` sub ${sub}`);
-  s = s.replace(/\\(int)_\{?([^{}\s]*)\}?\^\{?([^{}\s]*)\}?/g, ' the integral from $2 to $3 of ');
-  s = s.replace(/\\lim_\{([^{}]*)\}/g, ' the limit as $1 of ');
-  s = s.replace(/\\to\b/g, ' approaches ').replace(/\\infty/g, ' infinity ');
-  s = s.replace(/\\(times|cdot)/g, ' times ').replace(/\\pm/g, ' plus or minus ').replace(/\\le(q)?\b/g, ' less than or equal to ').replace(/\\ge(q)?\b/g, ' greater than or equal to ').replace(/\\neq?\b/g, ' not equal to ');
-  s = s.replace(/\\(sin|cos|tan|sec|csc|cot)\b/g, (m, f) => ({ sin: ' sine ', cos: ' cosine ', tan: ' tangent ', sec: ' secant ', csc: ' cosecant ', cot: ' cotangent ' }[f]));
-  s = s.replace(/\\ln\b/g, ' natural log ').replace(/\\log_\{?(\w+)\}?/g, ' log base $1 ').replace(/\\log\b/g, ' log ');
-  s = s.replace(/\\([A-Za-z]+)/g, (m, name) => GREEK[name] ? ` ${GREEK[name]} ` : ' ');
-  s = s.replace(/\\text\{([^{}]*)\}/g, '$1').replace(/\\[,;!]/g, ' ').replace(/[{}]/g, ' ');
-  s = s.replace(/=/g, ' equals ').replace(/</g, ' is less than ').replace(/>/g, ' is greater than ').replace(/\+/g, ' plus ');
-  return s;
+  return plain(items.join(' ').replace(/ ,/g, ','));
+}
+
+function rawText (nodes) {
+  return nodes.map(n => n.t === 'group' ? rawText(n.c) : n.t === 'cmd' ? (n.v === 'circ' ? '\\circ' : n.v === 'prime' ? "'" : '') : n.v).join('');
+}
+
+function mathToSpeech (tex, prevChar) {
+  // chemistry: a lone subscript/charge right after a symbol, e.g. H\(_{2}\)O, Fe\(^{3+}\)
+  const lone = tex.match(/^\s*([_^])\{([^{}]*)\}\s*$/);
+  if (lone) {
+    const v = lone[2].trim();
+    if (lone[1] === '_') return /[A-Za-z)]/.test(prevChar || '') && /^\d+$/.test(v) ? ` ${v}` : ` sub ${speakNodes(parseTex(v))}`;
+    if (/^\d*[+\-−–]$/.test(v)) return ` ${v.slice(0, -1)} ${v.endsWith('+') ? 'plus' : 'minus'}`;
+    return power({ spoken: speakNodes(parseTex(v)), raw: v }, prevChar || 'x');
+  }
+  return ' ' + speakNodes(parseTex(tex));
+}
+
+// ordinary (non-LaTeX) text: symbols and number formats a voice would misread
+function plainToSpeech (t) {
+  return t
+    .replace(/^[x×](?=\d)/, 'times ') // "x10" glued to the number
+    .replace(/(\d)([a-z])(?![A-Za-z])/g, '$1 $2') // 4x -> 4 x
+    .replace(/(^|[\s(])(-?\d+(?:\.\d+)?)\/(\d+(?:\.\d+)?)(?=$|[\s),.;:?])/g, '$1$2 over $3')
+    .replace(/([\w)])\s*=\s*(?=[\w(−–-])/g, '$1 equals ')
+    .replace(/([\w)])\+(?=[\w(])/g, '$1 plus ')
+    .replace(/(^|[\s(=,])[-−–](?=\d)/g, '$1negative ')
+    .replace(/\s[-−–]\s/g, ' minus ')
+    .replace(/[−]/g, ' minus ')
+    .replace(/[º°]\s?C\b/g, ' degrees Celsius').replace(/[º°]\s?F\b/g, ' degrees Fahrenheit')
+    .replace(/×/g, ' times ').replace(/[º°]/g, ' degrees').replace(/π/g, ' pi ').replace(/√/g, ' square root of ')
+    .replace(/→/g, ' yields ');
 }
 
 export function spokenWord (text) {
@@ -149,20 +301,24 @@ export function spokenWord (text) {
   const re = /\\\((.*?)\\\)/g;
   let m;
   while ((m = re.exec(text))) {
-    out += text.slice(last, m.index);
+    out += plainToSpeech(text.slice(last, m.index));
     out += mathToSpeech(m[1], out.slice(-1)) + ' ';
     last = re.lastIndex;
   }
-  out += text.slice(last);
-  return out
-    .replace(/(^|[\s(=,])[-−–](?=\d)/g, '$1negative ')
-    .replace(/\s[-−–]\s/g, ' minus ')
-    .replace(/[−]/g, ' minus ')
-    .replace(/[º°]\s?C\b/g, ' degrees Celsius').replace(/[º°]\s?F\b/g, ' degrees Fahrenheit')
-    .replace(/×/g, ' times ').replace(/[º°]/g, ' degrees').replace(/π/g, ' pi ').replace(/√/g, ' square root of ')
-    .replace(/[[\]]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  out += plainToSpeech(text.slice(last));
+  return out.replace(/[[\]]/g, '').replace(/\s+/g, ' ').replace(/ ([,.;:?!])/g, '$1').trim();
+}
+
+const numberish = t => /^[-–−(]*[\d.,]+[)%.,;:?]*$/.test(t) || /^[-–−(]*[\d.]+\\\(/.test(t) || /^10\\\(/.test(t);
+const STANDALONE = { '=': 'equals', '+': 'plus', '×': 'times', '÷': 'divided by', '<': 'is less than', '>': 'is greater than', '≤': 'is less than or equal to', '≥': 'is greater than or equal to', '±': 'plus or minus', '→': 'yields', '/': 'over', '*': 'times' };
+
+// a token that's part of an equation (read a bit slower, like a moderator does)
+export function isEquation (t) {
+  if (STANDALONE[t] || /^[-−–]$/.test(t)) return true;
+  const math = (t.match(/\\\((.*?)\\\)/g) || []).join(' ');
+  if (math && !/^(\\\([_^]\{[^{}]*\}\\\)\s*)+$/.test(math)) return true; // more than a chemistry subscript/charge
+  if (/^\d*[a-z]\d*[\^=+]/i.test(t) || /[=+^]/.test(t)) return true;
+  return /^-?\d+[a-z]$/.test(t) || /\d\s*[x×]\s*10/.test(t);
 }
 
 const mathy = t => /\\\(|[=+×÷^√π<>≤≥|θαβλΔ∆]/.test(t) || /^(sin|cos|tan|log|ln|lim)\b/i.test(t) ||
@@ -173,6 +329,18 @@ const mathy = t => /\\\(|[=+×÷^√π<>≤≥|θαβλΔ∆]/.test(t) || /^(sin
 // one-word pronunciation guides like "[kor-ee-AWN-ik]" are skipped.
 export function spokenTokens (toks) {
   const out = toks.map(t => spokenWord(t.text));
+  out.described = new Set(); // tokens inside a spoken description of math
+  // symbols standing alone between words
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i].text; const prev = toks[i - 1]?.text || ''; const next = toks[i + 1]?.text || '';
+    if (STANDALONE[t]) out[i] = STANDALONE[t];
+    else if (/^[xX]$/.test(t) && numberish(prev) && (numberish(next) || /^\d/.test(next))) {
+      out[i] = /^(matri|grid|array|board|square)/i.test(toks[i + 2]?.text || '') ? 'by' : 'times';
+    } else if (/^[-−–]$/.test(t)) {
+      const m = x => mathy(x) || isEquation(x) || numberish(x);
+      out[i] = (m(prev) && m(next)) ? 'minus' : '';
+    }
+  }
   for (let i = 0; i < toks.length; i++) {
     const t = toks[i].text;
     const readAs = /^\(read$/i.test(t);
@@ -182,12 +350,15 @@ export function spokenTokens (toks) {
     const closer = readAs ? /\)[.,;:?]*$/ : /\][.,;:?)]*$/;
     while (j < toks.length - 1 && !closer.test(toks[j].text)) j++;
     if (bracket && i === j) { out[i] = out[i].replace(/^.*?([.,;:?]*)$/, '$1'); continue; } // pronunciation guide
+    for (let d = i; d <= j; d++) out.described.add(d);
     if (readAs) {
       out[i] = '';
       if (toks[i + 1] && /^as:?$/i.test(toks[i + 1].text)) out[i + 1] = '';
       out[j] = out[j].replace(/\)([.,;:?]*)$/, '$1');
     }
-    for (let k = i - 1, n = 0; k >= 0 && n < 14 && mathy(toks[k].text); k--, n++) out[k] = '';
+    // silence the symbols this description replaces, but never past an answer-choice
+    // label or the end of an earlier description
+    for (let k = i - 1, n = 0; k >= 0 && n < 14 && !toks[k].br && !/[\])]$/.test(toks[k].text.replace(/\\\)$/, '')) && (mathy(toks[k].text) || isEquation(toks[k].text)); k--, n++) out[k] = '';
     i = j;
   }
   return out;
@@ -209,7 +380,8 @@ export function speechChunks (q, toks) {
       said.push(w);
       if (w) text += w + ' ';
     }
-    if (text.trim()) chunks.push({ text: text.trim(), idxs: cur.slice(), offsets, words: said });
+    const math = cur.some(i => words.described.has(i) || isEquation(toks[i].text));
+    if (text.trim()) chunks.push({ text: text.trim(), idxs: cur.slice(), offsets, words: said, math });
     else if (chunks.length) {
       const last = chunks[chunks.length - 1];
       last.idxs.push(...cur); last.offsets.push(...cur.map(() => last.text.length)); last.words.push(...cur.map(() => ''));
@@ -329,11 +501,14 @@ export function alignChunk (chunk, samples, rate, weights = null) {
 // Fitted to the neural voice reading 20 NSB questions at normal speed (within ~4% per
 // question): 0.182 s per syllable, 0.58 s per sentence or answer-choice "clip" (the
 // beat before it plus the slowing at its end), 0.47 s per comma or inner sentence
-// break. Over all 12,023 questions that's 153 words per minute, a natural read-aloud pace.
+// break. Over all 12,023 questions (equations read slower) that's 147 words per minute, a natural read-aloud pace.
 const SEC_PER_SYLLABLE = 0.182;
 const CLIP = 0.576;
 const LEAD = 0.32; // part of CLIP that comes before a clip's first word
 const PUNCT = 0.466;
+// moderators slow down for equations; the voice reads those clips at this rate too
+export const MATH_RATE = 0.8;
+const MATH_WORDS = 1.06; // spoken math ("x", "5 over 6") runs ~6% longer than its syllable count
 
 export function speedFactor (setting) {
   return setting <= 50 ? 0.6 + 0.4 * setting / 50 : 1 + 0.8 * (setting - 50) / 50;
@@ -348,16 +523,19 @@ export function headerText (q) {
 export function readingTimes (q, toks) {
   const words = spokenTokens(toks);
   const header = syllables(headerText(q)) * SEC_PER_SYLLABLE + CLIP + LEAD;
-  const chunkEnds = new Set(speechChunks(q, toks).slice(1).map(c => c.idxs[c.idxs.length - 1]));
+  const chunks = speechChunks(q, toks).slice(1);
+  const chunkEnds = new Set(chunks.map(c => c.idxs[c.idxs.length - 1]));
+  // same clips the voice slows down for equations
+  const slow = new Set(chunks.filter(c => c.math).flatMap(c => c.idxs));
   const times = toks.map((t, i) => {
     const w = t.br ? t.text.replace(')', '') : words[i];
     let sec = w ? syllables(w) * SEC_PER_SYLLABLE : 0; // symbols a read-as covers, pronunciation guides: 0
-    if (i === toks.length - 1) return sec + (CLIP - LEAD); // then the clock starts
-    if (chunkEnds.has(i)) sec += CLIP;
+    if (i === toks.length - 1) sec += CLIP - LEAD; // then the clock starts
+    else if (chunkEnds.has(i)) sec += CLIP;
     else if (w && /[,;:.?!]["”)]?$/.test(w)) sec += PUNCT;
-    return sec;
+    return slow.has(i) ? sec * MATH_WORDS / MATH_RATE : sec;
   });
   return { header, times };
 }
 
-export function naturalWpm () { return 153; } // readingTimes at 1.0x over all questions
+export function naturalWpm () { return 147; } // readingTimes at 1.0x over all questions

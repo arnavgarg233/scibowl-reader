@@ -1,5 +1,5 @@
 import { checkAnswer, parseAnswer, stripLatex } from './check.js';
-import { NeuralVoice, NEURAL_VOICES, alignChunk, naturalWpm, rankBrowserVoices, readingTimes, speechChunks, speedFactor } from './voice.js';
+import { MATH_RATE, NeuralVoice, NEURAL_VOICES, alignChunk, naturalWpm, rankBrowserVoices, readingTimes, speechChunks, speedFactor } from './voice.js';
 import { countdown } from './timer.js';
 
 const CATEGORIES = ['Biology', 'Chemistry', 'Earth and Space', 'Energy', 'Math', 'Physics', 'General Science'];
@@ -171,7 +171,10 @@ function audioContext () {
 function requestChunks (q) {
   const chunks = speechChunks(q, tokenize(q));
   const voice = settings.neuralVoice; const speed = neuralSpeed();
-  return chunks.map(c => ({ ...c, key: neural.key(c.text, voice, speed), audio: neural.request(c.text, voice, speed, c.words) }));
+  return chunks.map(c => {
+    const sp = c.math ? Math.round(speed * MATH_RATE * 100) / 100 : speed; // slower for equations
+    return { ...c, key: neural.key(c.text, voice, sp), audio: neural.request(c.text, voice, sp, c.words) };
+  });
 }
 
 function prefetchUpcoming (currentChunks = []) {
@@ -258,11 +261,11 @@ function speakBrowser () {
   const speakChunk = (ci) => {
     if (!live()) return;
     if (ci >= chunks.length) return doneReading();
-    const { text, idxs, offsets } = chunks[ci];
+    const { text, idxs, offsets, math } = chunks[ci];
     const u = new SpeechSynthesisUtterance(text);
     const v = voices.find(x => x.name === settings.voice);
     if (v) u.voice = v;
-    u.rate = speedFactor(settings.readingSpeed);
+    u.rate = speedFactor(settings.readingSpeed) * (math ? MATH_RATE : 1);
     u.onboundary = (e) => {
       if (!live() || !idxs.length) return;
       let k = 0;
