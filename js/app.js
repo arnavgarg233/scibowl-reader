@@ -1,5 +1,5 @@
 import { checkAnswer, parseAnswer, stripLatex } from './check.js';
-import { MATH_RATE, NeuralVoice, NEURAL_VOICES, alignChunk, naturalWpm, rankBrowserVoices, readingTimes, speechChunks, speedFactor } from './voice.js';
+import { MATH_RATE, VOICE_SPEED, NeuralVoice, NEURAL_VOICES, alignChunk, naturalWpm, rankBrowserVoices, readingTimes, speechChunks, speedFactor } from './voice.js';
 import { countdown } from './timer.js';
 
 const CATEGORIES = ['Biology', 'Chemistry', 'Earth and Space', 'Energy', 'Math', 'Physics', 'General Science'];
@@ -152,7 +152,19 @@ const neural = new NeuralVoice(status => {
   }
 });
 
-function neuralSpeed () { return Math.round(speedFactor(settings.readingSpeed) * 20) / 20; }
+// the voice's natural speed is a little quicker than a moderator; match the moderator at 1.0x
+function neuralSpeed () { return Math.round(VOICE_SPEED * speedFactor(settings.readingSpeed) * 20) / 20; }
+
+// wait on the audio clock, so pausing (which suspends it) holds the wait too
+function voiceGap (seconds, gen) {
+  return new Promise(resolve => {
+    if (seconds <= 0 || !voiceCtx) return resolve();
+    const end = voiceCtx.currentTime + seconds;
+    const t = setInterval(() => {
+      if (gen !== game.speechGen || voiceCtx.currentTime >= end) { clearInterval(t); resolve(); }
+    }, 20);
+  });
+}
 
 function voiceMode () {
   if (settings.voiceMode === 'neural') return neural.isReady ? 'neural' : 'off'; // silent until the model is ready
@@ -218,6 +230,9 @@ async function speakNeural () {
     await playChunk(audio, chunk, gen);
     if (!live()) return;
     if (chunk.idxs.length) revealUpTo(chunk.idxs[chunk.idxs.length - 1] + 1);
+    // the pause a moderator leaves here (sentence break, before/after an answer letter)
+    await voiceGap((chunk.gapAfter || 0) / speedFactor(settings.readingSpeed), gen);
+    if (!live()) return;
   }
   if (live()) doneReading();
 }
@@ -231,9 +246,11 @@ function playChunk (audio, chunk, gen) {
     src.buffer = buf;
     src.connect(ctx.destination);
     game.voiceSource = src;
-    const start = ctx.currentTime;
-    // when each word starts in this clip (phoneme lengths pinned to the real pauses)
-    const { starts, voicedEnd } = alignChunk(chunk, audio.samples, audio.rate, audio.weights);
+    // when each word starts in this clip (phoneme lengths pinned to the real pauses);
+    // play only the spoken part, the pauses between clips come from voiceGap
+    const { starts, voicedStart, voicedEnd } = alignChunk(chunk, audio.samples, audio.rate, audio.weights);
+    const skip = Math.max(0, voicedStart - 0.03);
+    const start = ctx.currentTime - skip;
     // move on (and start the NSB clock) when the voice stops, not after the clip's silent tail
     let done = false;
     const finish = () => { if (!done) { done = true; clearInterval(tick); resolve(); } };
@@ -248,7 +265,7 @@ function playChunk (audio, chunk, gen) {
       if (k) revealUpTo(chunk.idxs[k - 1] + 1);
     }, 25);
     src.onended = () => { if (game.voiceSource === src) game.voiceSource = null; finish(); };
-    src.start();
+    src.start(0, skip);
   });
 }
 
@@ -275,7 +292,8 @@ function speakBrowser () {
     u.onend = () => {
       if (!live()) return;
       if (idxs.length) revealUpTo(idxs[idxs.length - 1] + 1);
-      speakChunk(ci + 1);
+      const gap = (chunks[ci].gapAfter || 0) / speedFactor(settings.readingSpeed) * 1000;
+      game.readTimeout = setTimeout(() => speakChunk(ci + 1), gap);
     };
     synth.speak(u);
   };

@@ -139,7 +139,10 @@ function parseTex (src) {
 }
 
 const plain = s => s.replace(/\s+/g, ' ').trim();
-const quantity = s => COMPOUND.test(s) ? `the quantity ${s},` : s;
+// the voice drops a lone "A" right after "sub"; "eh" comes out as the letter (checked with speech recognition)
+const subLetter = s => s === 'A' ? 'eh' : s;
+const SCI = /^-?[\d.]+ times 10 to the (negative )?\S+$/; // 6.0 times 10 to the 22nd is a single number
+const quantity = s => COMPOUND.test(s) && !SCI.test(s) && !/^the quantity/.test(s) ? `the quantity ${s},` : s;
 
 function power (arg, base) {
   const raw = plain(arg.raw);
@@ -149,7 +152,7 @@ function power (arg, base) {
   if (raw === '2') return ' squared';
   if (raw === '3') return ' cubed';
   if (/^\d+$/.test(raw)) return ` to the ${ordinal(raw)}`;
-  if (/^[-−–]\d+$/.test(raw)) return ` to the negative ${raw.slice(1)}`;
+  if (/^[-−–]\d+$/.test(raw)) return ` to the negative ${ordinal(raw.slice(1))}`;
   if (/^[A-Za-z]$/.test(raw)) return ` to the ${raw}`;
   if (raw === "'" || raw === '\\prime') return ' prime';
   return ` to the power of ${arg.spoken},`;
@@ -224,7 +227,7 @@ function speakNodes (nodes) {
       const a = arg();
       const base = plain(items.pop() || '');
       if (c === '^') items.push(`${/\)$/.test(base) || COMPOUND.test(base) ? `the quantity ${base.replace(/[()]/g, '')},` : base}${power(a, base)}`);
-      else items.push(/^\d+$/.test(plain(a.raw)) && /[A-Za-z)]$/.test(base) && !/^[a-z]$/.test(base) ? `${base} ${plain(a.raw)}` : `${base} sub ${a.spoken}`);
+      else items.push(/^\d+$/.test(plain(a.raw)) && /[A-Za-z)]$/.test(base) && !/^[a-z]$/.test(base) ? `${base} ${plain(a.raw)}` : `${base} sub ${subLetter(a.spoken)}`);
       continue;
     }
     if (/\d/.test(c) || (c === '.' && nodes[k] && /\d/.test(nodes[k].v || ''))) { // whole number
@@ -237,7 +240,7 @@ function speakNodes (nodes) {
       // "f(x)" -> "f of x"
       const next = nodes[k];
       if (/^[fgh]$/.test(c) && next && next.t === 'ch' && next.v === '(') { items.push(`${c} of`); k++; let depth = 1; const inner = []; while (k < nodes.length) { const x = nodes[k++]; if (x.t === 'ch' && x.v === '(') depth++; if (x.t === 'ch' && x.v === ')' && --depth === 0) break; inner.push(x); } items.push(speakNodes(inner)); continue; }
-      items.push(c === 'a' ? 'ay' : c);
+      items.push(c === 'a' ? 'A' : c); // lowercase "a" would be read as the article
       continue;
     }
     if (c === '(' || c === '[') {
@@ -245,7 +248,8 @@ function speakNodes (nodes) {
       while (k < nodes.length) { const x = nodes[k++]; if (x.t === 'ch' && x.v === c) depth++; if (x.t === 'ch' && x.v === close && --depth === 0) break; inner.push(x); }
       const s = speakNodes(inner);
       const followedByPower = nodes[k] && nodes[k].t === 'ch' && nodes[k].v === '^';
-      items.push(followedByPower ? `(${s})` : COMPOUND.test(s) && prevIsOperand() ? `times the quantity ${s},` : COMPOUND.test(s) ? `the quantity ${s},` : s);
+      const wrap = COMPOUND.test(s) && !SCI.test(s) && !/^the quantity/.test(s);
+      items.push(followedByPower ? `(${s})` : wrap && prevIsOperand() ? `times the quantity ${s},` : wrap ? `the quantity ${s},` : prevIsOperand() && SCI.test(s) ? `times ${s}` : s);
       continue;
     }
     if (c === '|') {
@@ -272,7 +276,7 @@ function mathToSpeech (tex, prevChar) {
   const lone = tex.match(/^\s*([_^])\{([^{}]*)\}\s*$/);
   if (lone) {
     const v = lone[2].trim();
-    if (lone[1] === '_') return /[A-Za-z)]/.test(prevChar || '') && /^\d+$/.test(v) ? ` ${v}` : ` sub ${speakNodes(parseTex(v))}`;
+    if (lone[1] === '_') return /[A-Za-z)]/.test(prevChar || '') && /^\d+$/.test(v) ? ` ${v}` : ` sub ${subLetter(speakNodes(parseTex(v)))}`;
     if (/^\d*[+\-−–]$/.test(v)) return ` ${v.slice(0, -1)} ${v.endsWith('+') ? 'plus' : 'minus'}`;
     return power({ spoken: speakNodes(parseTex(v)), raw: v }, prevChar || 'x');
   }
@@ -282,6 +286,8 @@ function mathToSpeech (tex, prevChar) {
 // ordinary (non-LaTeX) text: symbols and number formats a voice would misread
 function plainToSpeech (t) {
   return t
+    .replace(/\)\s*\(/g, ') times (')
+    .replace(/\(([^()]*\d[^()]*)\)/g, ' $1 ')
     .replace(/^[x×](?=\d)/, 'times ') // "x10" glued to the number
     .replace(/(\d)([a-z])(?![A-Za-z])/g, '$1 $2') // 4x -> 4 x
     .replace(/(^|[\s(])(-?\d+(?:\.\d+)?)\/(\d+(?:\.\d+)?)(?=$|[\s),.;:?])/g, '$1$2 over $3')
@@ -306,7 +312,8 @@ export function spokenWord (text) {
     last = re.lastIndex;
   }
   out += plainToSpeech(text.slice(last));
-  return out.replace(/[[\]]/g, '').replace(/\s+/g, ' ').replace(/ ([,.;:?!])/g, '$1').trim();
+  // brackets and parentheses are never spoken (and make the voice stumble)
+  return out.replace(/[[\]()]/g, ' ').replace(/\s+/g, ' ').replace(/ ([,.;:?!])/g, '$1').trim();
 }
 
 const numberish = t => /^[-–−(]*[\d.,]+[)%.,;:?]*$/.test(t) || /^[-–−(]*[\d.]+\\\(/.test(t) || /^10\\\(/.test(t);
@@ -368,20 +375,20 @@ export function spokenTokens (toks) {
 // audio starts quickly, then sentence-sized pieces, one per answer choice.
 export function speechChunks (q, toks) {
   const words = spokenTokens(toks);
-  const chunks = [{ text: headerText(q), idxs: [], offsets: [], words: [] }];
+  const chunks = [{ text: headerText(q), idxs: [], offsets: [], words: [], gapAfter: HUMAN.afterHeader }];
   let cur = [];
   const flush = () => {
     if (!cur.length) return;
     let text = ''; const offsets = []; const said = [];
     for (const i of cur) {
       offsets.push(text.length);
-      let w = words[i];
-      if (toks[i].br) w = toks[i].text.replace(')', '') + ','; // "W," before a choice
+      const w = toks[i].br ? toks[i].text.replace(')', '') + '.' : words[i]; // "W." said on its own
       said.push(w);
       if (w) text += w + ' ';
     }
     const math = cur.some(i => words.described.has(i) || isEquation(toks[i].text));
-    if (text.trim()) chunks.push({ text: text.trim(), idxs: cur.slice(), offsets, words: said, math });
+    const letter = toks[cur[0]].br ? toks[cur[0]].text[0] : null;
+    if (text.trim()) chunks.push({ text: text.trim(), idxs: cur.slice(), offsets, words: said, math, letter });
     else if (chunks.length) {
       const last = chunks[chunks.length - 1];
       last.idxs.push(...cur); last.offsets.push(...cur.map(() => last.text.length)); last.words.push(...cur.map(() => ''));
@@ -389,7 +396,7 @@ export function speechChunks (q, toks) {
     cur = [];
   };
   toks.forEach((t, i) => {
-    if (t.br) flush();
+    if (t.br) { flush(); cur.push(i); flush(); return; } // the letter is its own clip
     cur.push(i);
     const firstChunk = chunks.length === 1;
     const end = /[.?!:;]["”]?$/.test(t.text);
@@ -398,6 +405,11 @@ export function speechChunks (q, toks) {
       (toks[i + 1] && toks[i + 1].br)) flush();
   });
   flush();
+  // human pause after each clip
+  for (let c = 1; c < chunks.length; c++) {
+    const ch = chunks[c]; const next = chunks[c + 1];
+    ch.gapAfter = !next ? 0 : ch.letter ? HUMAN.afterChoice[ch.letter] : next.letter ? HUMAN.beforeChoice : HUMAN.phraseBreak;
+  }
   return chunks;
 }
 
@@ -493,22 +505,49 @@ export function alignChunk (chunk, samples, rate, weights = null) {
     const [p0, a0] = anchors[k - 1]; const [p1, a1] = anchors[k];
     return p1 === p0 ? a1 : a0 + (a1 - a0) * (p - p0) / (p1 - p0);
   };
-  return { starts: startPos.map(timeAt), ends: startPos.map((p, i) => timeAt(p + w[i])), voicedEnd: t1 };
+  return { starts: startPos.map(timeAt), ends: startPos.map((p, i) => timeAt(p + w[i])), voicedStart: t0, voicedEnd: t1 };
 }
 
-// ---------- human reading pace (text-only mode) ----------
+// ---------- human reading pace ----------
 
-// Fitted to the neural voice reading 20 NSB questions at normal speed (within ~4% per
-// question): 0.182 s per syllable, 0.58 s per sentence or answer-choice "clip" (the
-// beat before it plus the slowing at its end), 0.47 s per comma or inner sentence
-// break. Over all 12,023 questions (equations read slower) that's 147 words per minute, a natural read-aloud pace.
-const SEC_PER_SYLLABLE = 0.182;
-const CLIP = 0.576;
-const LEAD = 0.32; // part of CLIP that comes before a clip's first word
-const PUNCT = 0.466;
-// moderators slow down for equations; the voice reads those clips at this rate too
-export const MATH_RATE = 0.8;
-const MATH_WORDS = 1.06; // spoken math ("x", "5 over 6") runs ~6% longer than its syllable count
+// Measured from real moderators: auto-caption word timings of 309 questions read in 14
+// National Science Bowl finals (high school and middle school, 2013-2026).
+//   content word   0.228 s + 0.101 s per syllable   (1 syllable 0.32 s ... 5 syllables 0.72 s)
+//   number         0.374 s + 0.111 s per syllable   (numbers are read noticeably slower)
+//   the/of/is...   0.20 s
+//   phrase break   0.52 s  (comma / sentence end; ~15% of word gaps)
+//   before W/X/Y/Z 0.31 s, after the letter 0.36-0.52 s (longer toward Z)
+//   header         ~2.2 s to say, then 0.62 s before the question starts
+//   math words     ~15% slower than other words
+// Overall about 141 words per minute.
+export const HUMAN = {
+  word: 0.228, perSyllable: 0.101,
+  number: 0.374, numberPerSyllable: 0.111,
+  functionWord: 0.2,
+  phraseBreak: 0.52,
+  beforeChoice: 0.31,
+  afterChoice: { W: 0.36, X: 0.36, Y: 0.44, Z: 0.52 },
+  afterHeader: 0.62,
+  math: 1.15
+};
+// the AI voice at speed 1 says 0.181 s per syllable; moderators average 0.210
+export const VOICE_SPEED = 0.86;
+export const MATH_RATE = 1 / HUMAN.math;
+
+const FUNCTION_WORDS = /^(the|a|an|of|to|in|is|and|for|on|by|at|it|as|or|what|which|that|this|its|be|are|with|from)$/i;
+
+// seconds to say a (possibly multi-word) spoken string
+function sayTime (spoken, math) {
+  let t = 0;
+  for (const w of spoken.split(/\s+/)) {
+    const bare = w.replace(/[^\w.-]/g, '');
+    if (!bare) continue;
+    if (/^-?\d/.test(bare)) t += HUMAN.number + HUMAN.numberPerSyllable * syllables(bare);
+    else if (FUNCTION_WORDS.test(bare)) t += HUMAN.functionWord * (math ? HUMAN.math : 1);
+    else t += (HUMAN.word + HUMAN.perSyllable * syllables(bare)) * (math ? HUMAN.math : 1);
+  }
+  return t;
+}
 
 export function speedFactor (setting) {
   return setting <= 50 ? 0.6 + 0.4 * setting / 50 : 1 + 0.8 * (setting - 50) / 50;
@@ -518,24 +557,21 @@ export function headerText (q) {
   return `${q.part === 'tossup' ? 'Toss-up' : 'Bonus'} ${q.num}. ${q.category}, ${q.format === 'mc' ? 'multiple choice' : 'short answer'}.`;
 }
 
-// Seconds to say the header, and each token plus the pause after it, at 1.0x, in the
-// same sentence / answer-choice pieces the voice reads.
+// Seconds to say the header, and each token plus the pause after it, at 1.0x.
 export function readingTimes (q, toks) {
   const words = spokenTokens(toks);
-  const header = syllables(headerText(q)) * SEC_PER_SYLLABLE + CLIP + LEAD;
-  const chunks = speechChunks(q, toks).slice(1);
-  const chunkEnds = new Set(chunks.map(c => c.idxs[c.idxs.length - 1]));
-  // same clips the voice slows down for equations
-  const slow = new Set(chunks.filter(c => c.math).flatMap(c => c.idxs));
+  const header = sayTime(headerText(q), false) + HUMAN.afterHeader;
   const times = toks.map((t, i) => {
+    const math = words.described.has(i) || isEquation(t.text);
     const w = t.br ? t.text.replace(')', '') : words[i];
-    let sec = w ? syllables(w) * SEC_PER_SYLLABLE : 0; // symbols a read-as covers, pronunciation guides: 0
-    if (i === toks.length - 1) sec += CLIP - LEAD; // then the clock starts
-    else if (chunkEnds.has(i)) sec += CLIP;
-    else if (w && /[,;:.?!]["”)]?$/.test(w)) sec += PUNCT;
-    return slow.has(i) ? sec * MATH_WORDS / MATH_RATE : sec;
+    let sec = w ? sayTime(w, math) : 0; // symbols a read-as covers, pronunciation guides: 0
+    if (i === toks.length - 1) return sec; // the clock starts right after the last word
+    if (t.br) sec += HUMAN.afterChoice[t.text[0]] || HUMAN.phraseBreak;
+    else if (toks[i + 1] && toks[i + 1].br) sec += HUMAN.beforeChoice;
+    else if (w && /[,;:.?!]["”)]?$/.test(w)) sec += HUMAN.phraseBreak;
+    return sec;
   });
   return { header, times };
 }
 
-export function naturalWpm () { return 147; } // readingTimes at 1.0x over all questions
+export function naturalWpm () { return 136; } // readingTimes at 1.0x over all questions (moderators measured 141)
