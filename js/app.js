@@ -1,6 +1,6 @@
-import { checkAnswer, parseAnswer, stripLatex } from './check.js';
-import { MATH_RATE, VOICE_SPEED, NeuralVoice, NEURAL_VOICES, alignChunk, naturalWpm, rankBrowserVoices, readingTimes, speechChunks, speedFactor } from './voice.js';
-import { countdown } from './timer.js';
+import { checkAnswer, parseAnswer, stripLatex } from './check.js?v=202609261912';
+import { MATH_RATE, VOICE_SPEED, NeuralVoice, NEURAL_VOICES, alignChunk, naturalWpm, rankBrowserVoices, readingTimes, speechChunks, speedFactor } from './voice.js?v=202609261912';
+import { countdown } from './timer.js?v=202609261912';
 
 const CATEGORIES = ['Biology', 'Chemistry', 'Earth and Space', 'Energy', 'Math', 'Physics', 'General Science'];
 const FORMATS = { mc: 'Multiple Choice', sa: 'Short Answer' };
@@ -412,6 +412,7 @@ function startQuestion (q) {
   game.toks = tokenize(q);
   game.wordIndex = 0;
   game.buzzIndex = -1;
+  game.buzzedWhileReading = false;
   game.paused = false;
   game.phase = 'reading';
   game.last = null;
@@ -484,6 +485,7 @@ function buzz () {
   $('pause').innerHTML = '<i class="bi bi-pause-fill"></i>';
   if (game.kind === 'tossup') {
     game.buzzIndex = game.wordIndex;
+    game.buzzedWhileReading = game.phase === 'reading';
     stopReading();
     stopTimer();
     beep();
@@ -551,8 +553,10 @@ function judge (correct) {
   score(correct, game.lastGiven ?? null);
 }
 
+// NSB: buzzing before the moderator has finished reading (the last word included) is an
+// interrupt, whether or not every word is already on screen
 function interrupted () {
-  return game.kind === 'tossup' && game.buzzIndex >= 0 && game.buzzIndex < game.toks.length;
+  return game.kind === 'tossup' && game.buzzedWhileReading;
 }
 
 function applyScore (result, sign) {
@@ -651,12 +655,12 @@ function showAnswer (given, pendingJudge, result) {
   if (given !== null && given !== undefined) {
     game.lastGiven = given;
     const mark = result ? (result.correct ? '<i class="bi bi-check-circle-fill text-success"></i>' : '<i class="bi bi-x-circle-fill text-danger"></i>') : '';
-    html += `<div class="given mt-1">${mark} You said: <b>${escapeHtml(given || '(nothing)')}</b>${result ? ` · ${result.points > 0 ? '+' : ''}${result.points} pts` : ''}${pendingJudge ? ' · <i>can\'t auto-check this one, judge it yourself</i>' : ''}</div>`;
+    html += `<div class="given mt-1">${mark} You said: <b>${escapeHtml(given || '(nothing)')}</b>${result ? ` · ${result.points > 0 ? '+' : ''}${result.points} pts${result.neg ? ' (interrupt)' : ''}` : ''}${pendingJudge ? ' · <i>can\'t auto-check this one, judge it yourself</i>' : ''}</div>`;
   } else if (result && !result.buzzed) {
     html += `<div class="given mt-1"><i class="bi bi-clock"></i> Time's up</div>`;
   } else if (result) {
     const mark = result.correct ? '<i class="bi bi-check-circle-fill text-success"></i>' : '<i class="bi bi-x-circle-fill text-danger"></i>';
-    html += `<div class="given mt-1">${mark} ${result.points > 0 ? '+' : ''}${result.points} pts</div>`;
+    html += `<div class="given mt-1">${mark} ${result.points > 0 ? '+' : ''}${result.points} pts${result.neg ? ' (interrupt)' : ''}</div>`;
   } else {
     game.lastGiven = null;
   }
@@ -669,7 +673,7 @@ function toggleCorrect (e) {
   if (!r || !r.buzzed) return;
   applyScore(r, -1);
   r.correct = !r.correct;
-  r.neg = !r.correct && r.q.part === 'tossup' && game.buzzIndex >= 0 && game.buzzIndex < game.toks.length;
+  r.neg = !r.correct && interrupted();
   r.points = pointsFor(r);
   applyScore(r, 1);
   recordProgress(r);
@@ -1025,8 +1029,8 @@ async function main () {
   $('question').innerHTML = '<span class="text-body-secondary">Loading questions…</span>';
   try {
     [ALL, SOURCES] = await Promise.all([
-      fetch('data/questions.json').then(r => r.json()),
-      fetch('data/sources.json').then(r => r.json())
+      fetch('data/questions.json?v=202609261912').then(r => r.json()),
+      fetch('data/sources.json?v=202609261912').then(r => r.json())
     ]);
   } catch (e) {
     $('question').innerHTML = '<span class="text-danger">Could not load data/questions.json. If you opened index.html directly from disk, serve the folder instead (for example <code>python3 -m http.server</code>).</span>';

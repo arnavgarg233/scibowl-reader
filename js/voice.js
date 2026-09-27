@@ -26,7 +26,7 @@ export class NeuralVoice {
   load () {
     if (this.ready) return this.ready;
     this.device = navigator.gpu ? 'webgpu' : 'wasm';
-    this.worker = new Worker(new URL('./tts-worker.js', import.meta.url), { type: 'module' });
+    this.worker = new Worker(new URL('./tts-worker.js?v=202609261912', import.meta.url), { type: 'module' });
     this.ready = new Promise((resolve, reject) => {
       this.worker.onmessage = (e) => {
         const m = e.data;
