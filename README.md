@@ -40,3 +40,29 @@ It's a static site, so GitHub Pages works as-is.
 
 Questions are from the U.S. Department of Energy National Science Bowl. Reading pace follows
 qbreader's timing (MIT). Original idea: [legendboss123/BuzzerPractice](https://github.com/legendboss123/BuzzerPractice).
+
+## Multiplayer
+
+`mp.html`: qbreader-style rooms. A public lobby plus join-by-code or invite link, shared reading,
+first buzz answers (others locked out), wrong answers let everyone else keep going, bonuses go to
+whoever got the toss-up, live scoreboard, chat, and room settings anyone can change.
+
+There's no game server. Rooms live in Firebase Realtime Database, and every change goes
+through a transaction, so Firebase settles races such as two simultaneous buzzes.
+
+### Multiplayer setup (one time, free)
+
+1. Go to https://console.firebase.google.com, choose **Create a project** (Analytics can be off).
+2. **Build → Realtime Database → Create database**, pick a location, start in **locked mode**.
+   Open the **Rules** tab, paste the contents of `database.rules.json`, and **Publish**.
+3. **Build → Authentication → Get started → Sign-in method → Anonymous → Enable**.
+4. **Project settings (gear) → Your apps → Web (`</>`)**: register an app (no hosting needed).
+   Copy the `firebaseConfig` object into `js/firebase-config.js`
+   (`export const firebaseConfig = { apiKey: ..., databaseURL: ..., ... };`).
+5. Also under **Authentication → Settings → Authorized domains**, make sure your site's domain
+   (e.g. `yourname.github.io`) is listed.
+
+### Testing locally without a project
+
+    npx firebase-tools emulators:start --only auth,database --project demo-sbr
+    # then open http://localhost:8765/mp.html?emulator in two tabs (each tab is its own player)

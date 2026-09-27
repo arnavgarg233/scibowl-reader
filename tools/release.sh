@@ -4,7 +4,7 @@
 set -e
 cd "$(dirname "$0")/.."
 V=$(date +%Y%m%d%H%M)
-sed -i.bak -E "s/\?v=[0-9]+/?v=$V/g" index.html js/app.js js/voice.js && rm -f index.html.bak js/*.bak
+sed -i.bak -E "s/\?v=[0-9]+/?v=$V/g" index.html mp.html js/*.js && rm -f *.html.bak js/*.bak
 git add -A
 git commit -m "${1:-Release $V}"
 git push origin main

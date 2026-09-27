@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en" data-bs-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SciBowl Reader - Multiplayer</title>
+  <meta name="description" content="Play National Science Bowl questions with friends in real time: shared reading, first buzz answers, live scores.">
+  <script>
+    (function () {
+      let t = 'auto';
+      try { t = JSON.parse(localStorage.getItem('sbr-settings') || '{}').theme || 'auto'; } catch (e) {}
+      if (t === 'auto') t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-bs-theme', t);
+    })();
+  </script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap">
+  <link rel="stylesheet" href="css/style.css?v=202609262104">
+</head>
+<body>
+  <nav class="navbar navbar-expand" id="navbar">
+    <div class="container-fluid">
+      <a class="navbar-brand ms-1 py-0" id="logo" href="./">
+        <span class="logo-prefix">SciBowl</span><span class="logo-suffix">Reader</span>
+      </a>
+      <div class="navbar-nav me-auto">
+        <a class="nav-link" href="./">Solo</a>
+        <a class="nav-link active" href="mp.html">Multiplayer</a>
+      </div>
+      <span class="text-body-secondary small d-none d-md-inline" id="conn-status"></span>
+    </div>
+  </nav>
+
+  <div class="container-fluid mt-3 mb-5 pb-5 px-xxl-5">
+    <div class="alert alert-warning d-none" id="setup-needed">
+      Multiplayer isn't set up yet: this copy of the site has no Firebase project configured.
+      See "Multiplayer setup" in the README.
+    </div>
+
+    <!-- lobby -->
+    <div id="lobby" class="d-none">
+      <div class="row g-4">
+        <div class="col-12 col-lg-4">
+          <label class="form-label" for="username">Your name</label>
+          <input class="form-control mb-3" id="username" maxlength="24" autocomplete="off" placeholder="Name shown to other players">
+
+          <div class="card mb-3">
+            <div class="card-body">
+              <h6 class="card-title">Create a room</h6>
+              <input class="form-control mb-2" id="new-room-name" maxlength="40" autocomplete="off" placeholder="Room name">
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" id="new-room-public" type="checkbox" role="switch" checked>
+                <label class="form-check-label" for="new-room-public">Show in the public lobby</label>
+              </div>
+              <button class="btn btn-primary" id="create-room" type="button">Create room</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-body">
+              <h6 class="card-title">Join by code</h6>
+              <div class="input-group">
+                <input class="form-control text-uppercase" id="join-code" maxlength="8" autocomplete="off" placeholder="ABCDE">
+                <button class="btn btn-success" id="join-room" type="button">Join</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="col-12 col-lg-8">
+          <h5>Public rooms</h5>
+          <div class="list-group" id="room-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- room -->
+    <div id="room" class="d-none">
+      <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+        <h5 class="mb-0" id="room-title"></h5>
+        <span class="badge text-bg-secondary" id="room-code"></span>
+        <button class="btn btn-sm btn-outline-secondary" id="copy-link" type="button"><i class="bi bi-link-45deg"></i> Copy invite link</button>
+        <button class="btn btn-sm btn-outline-danger ms-auto" id="leave-room" type="button">Leave</button>
+      </div>
+      <div class="row">
+        <div class="col-12 col-lg-3 order-lg-1 mb-4" id="settings">
+          <div class="timer d-block p-1 text-center" id="timer"><span class="face">0</span><span class="fraction">.0</span></div>
+          <hr>
+          <h6>Players</h6>
+          <ul class="list-group mb-3" id="players"></ul>
+          <details class="mb-3" id="room-settings">
+            <summary>Room settings <span class="small text-body-secondary">(anyone can change)</span></summary>
+            <div class="mt-2">
+              <select class="form-select form-select-sm mb-2" id="mp-question-type">
+                <option value="match">Toss-up → bonus (bonus to whoever got it)</option>
+                <option value="tossups">Toss-ups only</option>
+              </select>
+              <div class="small mb-1">Subjects:</div>
+              <div class="d-flex flex-wrap gap-1 mb-2" id="mp-categories"></div>
+              <div class="small mb-1">Difficulty:</div>
+              <div class="d-flex flex-wrap gap-1 mb-2" id="mp-difficulties"></div>
+              <div class="d-flex flex-wrap gap-1 mb-2" id="mp-formats"></div>
+              <label class="form-label small mb-0" for="mp-speed">Reading speed: <span id="mp-speed-label"></span></label>
+              <input class="form-range" id="mp-speed" type="range" min="0" max="100" step="5">
+              <div class="small text-body-secondary" id="mp-match-count"></div>
+            </div>
+          </details>
+          <h6>Chat</h6>
+          <form id="chat-form" autocomplete="off">
+            <input class="form-control form-control-sm" id="chat-input" maxlength="400" placeholder="Say something (Enter)">
+          </form>
+        </div>
+        <div class="col-12 col-lg-9">
+          <form id="mp-answer-form" autocomplete="off">
+            <div class="input-group d-none my-2" id="mp-answer-group">
+              <input class="form-control" id="mp-answer-input" type="text" placeholder="Enter answer" autocomplete="off" autocapitalize="off" spellcheck="false">
+              <button class="btn btn-success" type="submit">Submit</button>
+            </div>
+          </form>
+          <div class="d-none my-2 gap-2" id="mp-judge-group">
+            <span class="align-self-center me-1">Can't auto-check this one. Did you get it?</span>
+            <button class="btn btn-success" id="mp-judge-correct" type="button"><i class="bi bi-check-lg"></i> Correct <kbd>c</kbd></button>
+            <button class="btn btn-danger" id="mp-judge-wrong" type="button"><i class="bi bi-x-lg"></i> Wrong <kbd>w</kbd></button>
+          </div>
+          <div class="d-flex justify-content-between flex-wrap">
+            <span id="mp-status" class="fw-semibold"></span>
+            <span class="ps-lg-5 me-lg-2" id="mp-question-info"></span>
+          </div>
+          <div class="mt-2" id="mp-category-line"></div>
+          <div class="mt-1" id="mp-question"></div>
+          <div class="mt-2" id="mp-answer"></div>
+          <ul class="room-history list-unstyled mt-3 pt-2" id="mp-log"></ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="container-fluid py-3 px-xxl-5 position-fixed bottom-0 bg-body d-none" id="mp-button-bar">
+    <div class="row">
+      <div class="col-12 col-lg-9">
+        <button class="btn btn-primary" id="mp-next" type="button" title="Shortcut: n">Next</button>
+        <button class="btn btn-primary float-end" id="mp-buzz" type="button" title="Shortcut: space">Buzz</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script type="module" src="js/mp.js?v=202609262104"></script>
+</body>
+</html>

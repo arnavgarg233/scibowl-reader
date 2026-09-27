@@ -1,10 +1,9 @@
-import { checkAnswer, parseAnswer, stripLatex } from './check.js?v=202609261912';
-import { MATH_RATE, VOICE_SPEED, NeuralVoice, NEURAL_VOICES, alignChunk, naturalWpm, rankBrowserVoices, readingTimes, speechChunks, speedFactor } from './voice.js?v=202609261912';
-import { countdown } from './timer.js?v=202609261912';
+import { checkAnswer, parseAnswer, stripLatex } from './check.js?v=202609262104';
+import { MATH_RATE, VOICE_SPEED, NeuralVoice, NEURAL_VOICES, alignChunk, naturalWpm, rankBrowserVoices, readingTimes, speechChunks, speedFactor } from './voice.js?v=202609262104';
+import { countdown } from './timer.js?v=202609262104';
+import { CATEGORIES, DIFFICULTIES, DIFFICULTY_NAMES, FORMATS, POINTS, difficulty } from './common.js?v=202609262104';
+import { escapeHtml, renderRich, renderTokens, tokenize } from './render.js?v=202609262104';
 
-const CATEGORIES = ['Biology', 'Chemistry', 'Earth and Space', 'Energy', 'Math', 'Physics', 'General Science'];
-const FORMATS = { mc: 'Multiple Choice', sa: 'Short Answer' };
-const POINTS = { tossup: 4, bonus: 10 };
 
 const DEFAULT_SETTINGS = {
   questionType: 'match',
@@ -52,85 +51,6 @@ let progress = load('sbr-progress', { seen: [], missed: [] });
 let ALL = [];
 let BY_ID = {};
 let SOURCES = {};
-
-// ---------- text rendering ----------
-
-function escapeHtml (s) {
-  return s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-}
-
-function renderMath (tex) {
-  try {
-    return window.katex.renderToString(tex, { throwOnError: false, output: 'html' });
-  } catch (e) {
-    return escapeHtml(tex);
-  }
-}
-
-// plain text with \( ... \) math, pronunciation guides in [ ] and (read as: ...)
-function renderRich (text) {
-  let html = '';
-  const re = /\\\((.*?)\\\)/g;
-  let last = 0; let m;
-  while ((m = re.exec(text))) {
-    html += escapeHtml(text.slice(last, m.index));
-    html += renderMath(m[1]);
-    last = re.lastIndex;
-  }
-  html += escapeHtml(text.slice(last));
-  return html
-    .replace(/\[([^\]<]*)\]/g, '<span class="pron">[$1]</span>')
-    .replace(/\((read as:[^)<]*)\)/gi, '<span class="pron">($1)</span>');
-}
-
-// split into words without breaking a \( ... \) group
-function splitWords (text) {
-  const words = [];
-  let cur = ''; let inMath = false;
-  for (let i = 0; i < text.length; i++) {
-    if (text.startsWith('\\(', i)) inMath = true;
-    if (text.startsWith('\\)', i)) inMath = false;
-    const c = text[i];
-    if (/\s/.test(c) && !inMath) {
-      if (cur) words.push(cur);
-      cur = '';
-    } else cur += c;
-  }
-  if (cur) words.push(cur);
-  return words;
-}
-
-// tokens: [{ text, br }] where br = starts a choice line
-function tokenize (q) {
-  const toks = splitWords(q.text).map(t => ({ text: t }));
-  if (q.choices) {
-    q.choices.forEach((c, i) => {
-      toks.push({ text: 'WXYZ'[i] + ')', br: true });
-      splitWords(c).forEach(w => toks.push({ text: w }));
-    });
-  }
-  return toks;
-}
-
-function renderTokens (toks, upto, buzzAt = -1) {
-  let html = ''; let line = [];
-  const flush = (isChoice) => {
-    if (!line.length) return;
-    const inner = renderRich(line.join(' '));
-    html += isChoice ? `<span class="choice">${inner}</span>` : inner + ' ';
-    line = [];
-  };
-  let inChoice = false;
-  for (let i = 0; i < upto; i++) {
-    const t = toks[i];
-    if (t.br) { flush(inChoice); inChoice = true; }
-    if (i === buzzAt) line.push('\u0000BUZZ\u0000');
-    line.push(t.text);
-  }
-  if (buzzAt === upto) line.push('\u0000BUZZ\u0000');
-  flush(inChoice);
-  return html.replace(/\u0000BUZZ\u0000/g, '<span class="buzzmark">(#)</span>');
-}
 
 // ---------- speech ----------
 
@@ -342,14 +262,6 @@ function buildQueue () {
   updateMatchCount();
 }
 
-// NSB coordinator manual: rounds 1-10 are about equal; from round 11 each round
-// gets harder, with round 17 the hardest.
-function difficulty (q) {
-  const r = parseInt(q.round);
-  return r <= 10 ? 'standard' : r <= 14 ? 'hard' : 'hardest';
-}
-const DIFFICULTIES = { standard: 'Rounds 1–10', hard: 'Rounds 11–14', hardest: 'Rounds 15–17' };
-const DIFFICULTY_NAMES = { standard: 'Round robin', hard: 'Elimination', hardest: 'Late elimination' };
 
 function matching () {
   const wantPart = settings.questionType === 'bonuses' ? 'bonus' : 'tossup';
@@ -1029,8 +941,8 @@ async function main () {
   $('question').innerHTML = '<span class="text-body-secondary">Loading questions…</span>';
   try {
     [ALL, SOURCES] = await Promise.all([
-      fetch('data/questions.json?v=202609261912').then(r => r.json()),
-      fetch('data/sources.json?v=202609261912').then(r => r.json())
+      fetch('data/questions.json?v=202609262104').then(r => r.json()),
+      fetch('data/sources.json?v=202609262104').then(r => r.json())
     ]);
   } catch (e) {
     $('question').innerHTML = '<span class="text-danger">Could not load data/questions.json. If you opened index.html directly from disk, serve the folder instead (for example <code>python3 -m http.server</code>).</span>';

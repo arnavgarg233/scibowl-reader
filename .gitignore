@@ -1,3 +1,6 @@
 pdfs/
 __pycache__/
 .DS_Store
+firebase-debug.log
+database-debug.log
+.firebaserc
